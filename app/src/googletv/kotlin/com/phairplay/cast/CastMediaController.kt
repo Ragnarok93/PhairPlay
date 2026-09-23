@@ -164,7 +164,7 @@ internal class CastMediaController(
         mediaManager.setDataFromLoad(request)
 
         attachSurface(surfaceProvider())
-        player.setMediaItem(MediaItem.fromUri(contentUrl))
+        player.setMediaItem(buildMediaItem(mediaInfo, contentUrl))
 
         val startPositionMs = request.currentTime
         if (startPositionMs != MediaLoadRequestData.PLAY_POSITION_UNASSIGNED &&
@@ -277,6 +277,20 @@ internal class CastMediaController(
                 ?: return null
             val scheme = Uri.parse(candidate).scheme?.lowercase()
             return candidate.takeIf { scheme == "http" || scheme == "https" }
+        }
+
+        internal fun buildMediaItem(mediaInfo: MediaInfo, contentUrl: String): MediaItem {
+            val mimeType = mediaInfo.contentType
+                ?.substringBefore(';')
+                ?.trim()
+                ?.takeIf { it.isNotEmpty() }
+
+            return MediaItem.Builder()
+                .setUri(contentUrl)
+                .apply {
+                    if (mimeType != null) setMimeType(mimeType)
+                }
+                .build()
         }
     }
 }
