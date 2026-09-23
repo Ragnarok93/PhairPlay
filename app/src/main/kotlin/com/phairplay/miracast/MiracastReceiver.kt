@@ -761,6 +761,8 @@ internal class WfdRtspServer(
         val action = when (method) {
             "SETUP" -> wfdSession.onSetupResponse(statusCode, response.headers)
             "PLAY" -> wfdSession.onPlayResponse(statusCode)
+            "PAUSE" -> wfdSession.onPauseResponse(statusCode)
+            "TEARDOWN" -> wfdSession.onTeardownResponse(statusCode)
             else -> WfdSession.Action.None
         }
         performAction(action, output)
@@ -781,12 +783,29 @@ internal class WfdRtspServer(
                 uri = action.presentationUrl,
                 headers = action.sessionId?.let { mapOf("Session" to it) } ?: emptyMap()
             )
+            is WfdSession.Action.SendPause -> sendRequest(
+                output = output,
+                method = "PAUSE",
+                uri = action.presentationUrl,
+                headers = action.sessionId?.let { mapOf("Session" to it) } ?: emptyMap()
+            )
+            is WfdSession.Action.SendTeardown -> sendRequest(
+                output = output,
+                method = "TEARDOWN",
+                uri = action.presentationUrl,
+                headers = action.sessionId?.let { mapOf("Session" to it) } ?: emptyMap()
+            )
             WfdSession.Action.StreamStarted -> markSessionStarted()
             WfdSession.Action.StreamPaused -> Unit
             WfdSession.Action.SessionClosed -> {
                 if (sessionStarted) {
                     sessionStarted = false
                     onSessionStopped()
+                }
+                try {
+                    activeClient?.close()
+                } catch (e: Exception) {
+                    Logger.e("Error closing completed WFD RTSP session (non-fatal)", e)
                 }
             }
             is WfdSession.Action.ProtocolError ->
