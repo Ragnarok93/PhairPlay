@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * PhairPlayService — Android ForegroundService that hosts all receiver protocols.
@@ -95,6 +96,11 @@ class PhairPlayService : Service() {
     private var miracastReceiver: MiracastReceiver? = null
     private var castReceiver: CastReceiver? = null
 
+    // A Cast LAUNCH/LOAD intent can arrive before the foreground service has
+    // completed asynchronous receiver startup. Preserve the latest intent and
+    // deliver it after CastReceiver is initialized.
+    @Volatile private var pendingCastIntent: Intent? = null
+
     // Settings — read once when starting, re-read on restart
     private lateinit var settingsRepository: SettingsRepository
 
@@ -150,6 +156,21 @@ class PhairPlayService : Service() {
      */
     fun setVideoSurfaceProvider(provider: () -> Surface?) {
         videoSurfaceProvider = provider
+        castReceiver?.updateVideoSurface(provider())
+    }
+
+    /**
+     * Routes Google TV Cast Connect LAUNCH/LOAD intents without exposing any
+     * Google Play Services type to shared code. Fire TV's CastReceiver simply
+     * returns false.
+     */
+    fun handleCastIntent(intent: Intent): Boolean {
+        val receiver = castReceiver
+        if (receiver == null) {
+            pendingCastIntent = Intent(intent)
+            return false
+        }
+        return receiver.handleIntent(intent)
     }
 
     /**
@@ -304,12 +325,45 @@ class PhairPlayService : Service() {
         Logger.d("Miracast receiver started")
     }
 
-    private fun startCast() {
+    private suspend fun startCast() = withContext(Dispatchers.Main.immediate) {
+        if (castReceiver != null) {
+            Logger.i("Cast receiver already running — skipping duplicate start")
+            return@withContext
+        }
+
         _castState.value = ProtocolState.ADVERTISING
         castReceiver = CastReceiver(
             context = applicationContext,
-            onStateChanged = { state -> _castState.value = state }
+            surfaceProvider = { videoSurfaceProvider?.invoke() },
+            onStateChanged = { state ->
+                _castState.value = state
+                when (state) {
+                    ProtocolState.CONNECTED -> {
+                        _activeConnection.value = ActiveConnection("Cast Sender", Protocol.CAST)
+                        updateNotification(
+                            isRunning = true,
+                            streamingSenderName = "Cast Sender"
+                        )
+                    }
+                    ProtocolState.ADVERTISING,
+                    ProtocolState.DISABLED,
+                    ProtocolState.ERROR -> {
+                        if (_activeConnection.value?.protocol == Protocol.CAST) {
+                            _activeConnection.value = null
+                        }
+                        updateNotification(
+                            isRunning = state != ProtocolState.DISABLED &&
+                                state != ProtocolState.ERROR
+                        )
+                    }
+                }
+            }
         ).also { it.start() }
+
+        pendingCastIntent?.let { pending ->
+            castReceiver?.handleIntent(pending)
+            pendingCastIntent = null
+        }
         Logger.d("Cast receiver started")
     }
 
@@ -320,6 +374,7 @@ class PhairPlayService : Service() {
         airPlayReceiver = null
         miracastReceiver = null
         castReceiver = null
+        pendingCastIntent = null
         _airPlayState.value = ProtocolState.DISABLED
         _miracastState.value = ProtocolState.DISABLED
         _castState.value = ProtocolState.DISABLED
