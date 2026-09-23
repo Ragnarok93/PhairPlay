@@ -293,12 +293,13 @@ internal data class WfdLpcmFrame(
 
     companion object {
         fun parse(payload: ByteArray): WfdLpcmFrame? {
-            if (payload.size <= HEADER_SIZE) return null
-            if ((payload[0].toInt() and 0xFF) != 0xA0 ||
-                (payload[1].toInt() and 0xFF) != 0x06
-            ) {
-                return null
-            }
+            if (payload.size < HEADER_SIZE) return null
+            if ((payload[0].toInt() and 0xFF) != SYNC_BYTE) return null
+
+            // WFD LPCM byte 1 is the number of audio access units, not a
+            // constant. Each AU represents 80 PCM frames.
+            val numAus = payload[1].toInt() and 0xFF
+            if (numAus == 0) return null
 
             val format = payload[3].toInt() and 0xFF
             val bitsCode = (format ushr 6) and 0x03
@@ -324,8 +325,14 @@ internal data class WfdLpcmFrame(
                 return null
             }
 
-            val samples = payload.copyOfRange(HEADER_SIZE, payload.size)
-            if (samples.size < channels * 2 || samples.size % 2 != 0) return null
+            val bytesPerSample = bits / 8
+            val sampleBytes = numAus * FRAMES_PER_AU * channels * bytesPerSample
+            val end = HEADER_SIZE + sampleBytes
+            if (payload.size < end) return null
+
+            // Consume exactly what the header declares. A transport/PES buffer
+            // may contain additional bytes belonging to a following access unit.
+            val samples = payload.copyOfRange(HEADER_SIZE, end)
 
             return WfdLpcmFrame(
                 sampleRate = sampleRate,
@@ -335,6 +342,8 @@ internal data class WfdLpcmFrame(
             )
         }
 
+        private const val SYNC_BYTE = 0xA0
+        private const val FRAMES_PER_AU = 80
         private const val HEADER_SIZE = 4
     }
 }
