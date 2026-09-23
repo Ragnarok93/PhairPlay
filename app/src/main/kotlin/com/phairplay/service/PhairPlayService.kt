@@ -415,6 +415,12 @@ class PhairPlayService : Service() {
                 return
             }
 
+            if (protocol != Protocol.AIRPLAY) {
+                // AirPlay-specific overlays must never cover a Miracast/Cast owner.
+                _photoFrame.value = null
+                _nowPlaying.value = null
+                _pairingPin.value = null
+            }
             _activeConnection.value = ActiveConnection(senderName, protocol)
             updateNotification(isRunning = true, streamingSenderName = senderName)
             return
@@ -445,6 +451,9 @@ class PhairPlayService : Service() {
             Protocol.AIRPLAY -> {
                 val receiver = airPlayReceiver
                 airPlayReceiver = null
+                _photoFrame.value = null
+                _nowPlaying.value = null
+                _pairingPin.value = null
                 try {
                     receiver?.stop()
                 } catch (e: Exception) {
