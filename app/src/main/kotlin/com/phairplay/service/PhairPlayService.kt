@@ -17,6 +17,7 @@ import android.view.Surface
 import com.phairplay.airplay.AirPlayReceiver
 import com.phairplay.cast.CastReceiver
 import com.phairplay.miracast.MiracastReceiver
+import com.phairplay.miracast.MiracastPlayback
 import com.phairplay.settings.AppSettings
 import com.phairplay.settings.SettingsRepository
 import com.phairplay.util.Logger
@@ -94,6 +95,7 @@ class PhairPlayService : Service() {
     // Receiver instances — null when not running
     private var airPlayReceiver: AirPlayReceiver? = null
     private var miracastReceiver: MiracastReceiver? = null
+    private var miracastPlayback: MiracastPlayback? = null
     private var castReceiver: CastReceiver? = null
 
     // A Cast LAUNCH/LOAD intent can arrive before the foreground service has
@@ -157,6 +159,7 @@ class PhairPlayService : Service() {
     fun setVideoSurfaceProvider(provider: () -> Surface?) {
         videoSurfaceProvider = provider
         castReceiver?.updateVideoSurface(provider())
+        miracastPlayback?.onSurfaceChanged()
     }
 
     /**
@@ -317,10 +320,44 @@ class PhairPlayService : Service() {
     }
 
     private fun startMiracast() {
+        if (miracastReceiver != null) {
+            Logger.i("Miracast receiver already running — skipping duplicate start")
+            return
+        }
+
         _miracastState.value = ProtocolState.ADVERTISING
+        val playback = MiracastPlayback(
+            surfaceProvider = { videoSurfaceProvider?.invoke() }
+        )
+        miracastPlayback = playback
+
         miracastReceiver = MiracastReceiver(
             context = applicationContext,
-            onStateChanged = { state -> _miracastState.value = state }
+            onStateChanged = { state ->
+                _miracastState.value = state
+                when (state) {
+                    ProtocolState.CONNECTED -> {
+                        _activeConnection.value =
+                            ActiveConnection("Miracast Sender", Protocol.MIRACAST)
+                        updateNotification(
+                            isRunning = true,
+                            streamingSenderName = "Miracast Sender"
+                        )
+                    }
+                    ProtocolState.ADVERTISING,
+                    ProtocolState.DISABLED,
+                    ProtocolState.ERROR -> {
+                        if (_activeConnection.value?.protocol == Protocol.MIRACAST) {
+                            _activeConnection.value = null
+                        }
+                        updateNotification(
+                            isRunning = state != ProtocolState.DISABLED &&
+                                state != ProtocolState.ERROR
+                        )
+                    }
+                }
+            },
+            onMediaSample = playback::onSample
         ).also { it.start() }
         Logger.d("Miracast receiver started")
     }
@@ -370,9 +407,11 @@ class PhairPlayService : Service() {
     private fun stopAllReceiversInternal() {
         try { airPlayReceiver?.stop() } catch (e: Exception) { Logger.e("AirPlay stop error", e) }
         try { miracastReceiver?.stop() } catch (e: Exception) { Logger.e("Miracast stop error", e) }
+        try { miracastPlayback?.release() } catch (e: Exception) { Logger.e("Miracast playback stop error", e) }
         try { castReceiver?.stop() } catch (e: Exception) { Logger.e("Cast stop error", e) }
         airPlayReceiver = null
         miracastReceiver = null
+        miracastPlayback = null
         castReceiver = null
         pendingCastIntent = null
         _airPlayState.value = ProtocolState.DISABLED
