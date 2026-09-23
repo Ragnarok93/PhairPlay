@@ -84,6 +84,17 @@ jobs:
       - name: Run app unit tests, lint and build debug APK
         run: ./gradlew ${{ matrix.unit_test_task }} ${{ matrix.lint_task }} ${{ matrix.assemble_task }} --stacktrace
 
+      - name: Verify Fire TV runtime excludes Cast and Media3
+        if: matrix.flavor == 'firetv'
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew :app:dependencies --configuration firetvDebugRuntimeClasspath > firetv-runtime-deps.txt
+          if grep -E 'com\.google\.android\.gms|androidx\.media3' firetv-runtime-deps.txt; then
+            echo "Fire TV runtime classpath unexpectedly contains Google Cast/Media3 dependencies." >&2
+            exit 1
+          fi
+
       - name: Upload build reports
         uses: actions/upload-artifact@v4
         if: always()
