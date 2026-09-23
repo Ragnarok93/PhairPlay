@@ -24,11 +24,14 @@ class MiracastReceiverTest {
     fun `start advertises WFD service and emits advertising state`() {
         val context = mockk<Context>()
         val manager = mockk<WifiP2pManager>(relaxed = true)
+        val packageManager = mockk<PackageManager>()
         val channel = mockk<WifiP2pManager.Channel>(relaxed = true)
         val actionListener = slot<WifiP2pManager.ActionListener>()
         val states = mutableListOf<ProtocolState>()
 
         every { context.getSystemService(Context.WIFI_P2P_SERVICE) } returns manager
+        every { context.packageManager } returns packageManager
+        every { packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT) } returns true
         every { context.mainLooper } returns Looper.getMainLooper()
         every { context.checkSelfPermission("android.permission.NEARBY_WIFI_DEVICES") } returns
             PackageManager.PERMISSION_GRANTED
@@ -55,7 +58,7 @@ class MiracastReceiverTest {
     }
 
     @Test
-    fun `start emits error when WifiP2pManager is unavailable`() {
+    fun `start disables Miracast when WifiP2pManager is unavailable`() {
         val context = mockk<Context>()
         val states = mutableListOf<ProtocolState>()
 
@@ -63,7 +66,7 @@ class MiracastReceiverTest {
 
         MiracastReceiver(context) { states.add(it) }.start()
 
-        assertTrue(states.contains(ProtocolState.ERROR))
+        assertTrue(states.contains(ProtocolState.DISABLED))
     }
 
     @Test
@@ -83,7 +86,7 @@ class MiracastReceiverTest {
                 method = "GET_PARAMETER",
                 uri = "rtsp://192.168.49.1/wfd1.0",
                 headers = mapOf("CSeq" to "2"),
-                body = ""
+                body = "wfd_audio_codecs\r\nwfd_video_formats\r\nwfd_client_rtp_ports\r\n"
             )
         )
 
