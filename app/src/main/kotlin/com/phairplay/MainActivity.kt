@@ -22,6 +22,7 @@ import com.phairplay.service.ProtocolState
 import com.phairplay.service.ServiceController
 import com.phairplay.airplay.NowPlayingInfo
 import com.phairplay.ui.HomeFragment
+import com.phairplay.miracast.WifiDirectCompat
 import com.phairplay.ui.NowPlayingScreen
 import com.phairplay.ui.PhotoScreen
 import com.phairplay.ui.PinScreen
@@ -114,8 +115,9 @@ class MainActivity : AppCompatActivity() {
         // Start the service immediately so it's running before any sender discovers us
         ServiceController.start(this)
 
-        // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS
+        // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS.
         requestNotificationPermission()
+        requestWifiDirectPermission()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -339,8 +341,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun requestWifiDirectPermission() {
+        if (!WifiDirectCompat.isWifiDirectAvailable(this)) return
+
+        val missingPermissions = WifiDirectCompat.requiredRuntimePermissions()
+            .filter { permission ->
+                ContextCompat.checkSelfPermission(this, permission) !=
+                    PackageManager.PERMISSION_GRANTED
+            }
+
+        if (missingPermissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(
+                this,
+                missingPermissions.toTypedArray(),
+                PERMISSION_REQUEST_WIFI_DIRECT
+            )
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSION_REQUEST_WIFI_DIRECT &&
+            grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        ) {
+            ServiceController.restart(this)
+        }
+    }
+
     companion object {
         private const val PERMISSION_REQUEST_NOTIFICATIONS = 1001
+        private const val PERMISSION_REQUEST_WIFI_DIRECT = 1002
     }
 
     // ─── Streaming overlay ────────────────────────────────────────────────────
