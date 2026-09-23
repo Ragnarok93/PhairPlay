@@ -8,11 +8,20 @@ package com.phairplay.miracast
  * for M6/M7 and sends SETUP then PLAY to the advertised presentation URL.
  */
 internal class WfdSession(
-    val rtpPort: Int
+    val rtpPort: Int,
+    val rtcpPort: Int = 0
 ) {
     init {
         require(rtpPort in 1..65535) { "RTP port must be allocated before WFD negotiation" }
+        require(rtcpPort in 0..65535) { "RTCP port must be zero or a valid allocated port" }
     }
+
+    fun setupTransportHeader(): String =
+        if (rtcpPort > 0) {
+            "RTP/AVP/UDP;unicast;client_port=$rtpPort-$rtcpPort"
+        } else {
+            "RTP/AVP/UDP;unicast;client_port=$rtpPort"
+        }
 
     enum class State {
         NEGOTIATING,
@@ -62,7 +71,7 @@ internal class WfdSession(
             .joinToString(separator = "\r\n", postfix = if (requested.isEmpty()) "" else "\r\n") {
                 (name, value) ->
                 val resolved = if (name == "wfd_client_rtp_ports") {
-                    "RTP/AVP/UDP;unicast $rtpPort 0 mode=play"
+                    "RTP/AVP/UDP;unicast $rtpPort $rtcpPort mode=play"
                 } else {
                     value
                 }
