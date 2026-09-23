@@ -187,7 +187,7 @@ internal class WfdSession(
 
     companion object {
         private val CAPABILITIES = linkedMapOf(
-            "wfd_audio_codecs" to "LPCM 00000003 00",
+            "wfd_audio_codecs" to "LPCM 00000002 00",
             "wfd_video_formats" to
                 "00 00 02 10 0001FFFF 00000000 00000000 00 0000 0000 00 none none",
             "wfd_client_rtp_ports" to "",
