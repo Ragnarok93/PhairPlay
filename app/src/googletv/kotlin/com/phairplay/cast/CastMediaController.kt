@@ -77,7 +77,11 @@ internal class CastMediaController(
 
         mediaSession.setCallback(object : MediaSessionCompat.Callback() {
             override fun onPlay() {
+                attachSurface(surfaceProvider())
                 player.play()
+                if (currentMediaInfo != null) {
+                    onPlaybackActive(true)
+                }
                 publishState()
             }
 
@@ -94,6 +98,7 @@ internal class CastMediaController(
             override fun onStop() {
                 player.stop()
                 player.clearMediaItems()
+                player.clearVideoSurface()
                 currentMediaInfo = null
                 onPlaybackActive(false)
                 publishState()
@@ -104,6 +109,7 @@ internal class CastMediaController(
         player.addListener(object : Player.Listener {
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
+                    player.clearVideoSurface()
                     onPlaybackActive(false)
                 }
                 publishState()
@@ -115,12 +121,14 @@ internal class CastMediaController(
 
             override fun onPlayerError(error: PlaybackException) {
                 Logger.e("Cast playback error: ${error.errorCodeName}", error)
+                player.clearVideoSurface()
                 onPlaybackActive(false)
                 publishState()
             }
         })
 
-        attachSurface(surfaceProvider())
+        // Do not claim the shared TV Surface while Cast is only advertising.
+        // load()/onPlay() attach it when Cast actually has active media.
         mediaManager.setSessionCompatToken(mediaSession.sessionToken)
         mediaManager.setMediaLoadCommandCallback(loadCallback)
         publishState()
@@ -132,10 +140,19 @@ internal class CastMediaController(
     }
 
     fun updateSurface(surface: Surface?) {
+        val update = {
+            if (!released) {
+                if (currentMediaInfo != null && player.playbackState != Player.STATE_ENDED) {
+                    attachSurface(surface)
+                } else {
+                    player.clearVideoSurface()
+                }
+            }
+        }
         if (Looper.myLooper() == Looper.getMainLooper()) {
-            attachSurface(surface)
+            update()
         } else {
-            mainHandler.post { if (!released) attachSurface(surface) }
+            mainHandler.post(update)
         }
     }
 
