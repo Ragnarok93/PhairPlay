@@ -189,7 +189,7 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [x] DNS-SD WFD service advertisement and API-specific P2P listen/discovery mode
 - [x] WFD RTSP session model with requested-field capability exchange
 - [x] Standards-oriented sink→source RTSP control connection after Wi-Fi Direct group formation, with inbound port-7236 compatibility fallback
-- [x] Sink-originated M6 SETUP / M7 PLAY after `wfd_trigger_method: SETUP`
+- [x] Sink-originated RTSP SETUP / PLAY / PAUSE / TEARDOWN transactions from WFD trigger methods
 - [x] Adjacent even/odd RTP/RTCP UDP allocation; M3 advertises the primary RTP port without falsely claiming a second RTP port
 - [x] RTP v2 parsing with sequence-loss diagnostics
 - [x] MPEG-TS PAT/PMT/PES demux with PTS extraction and continuity recovery
