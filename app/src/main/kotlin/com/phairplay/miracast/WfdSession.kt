@@ -36,7 +36,7 @@ internal class WfdSession(
     sealed class Action {
         object None : Action()
         data class SendSetup(val presentationUrl: String) : Action()
-        data class SendPlay(val presentationUrl: String, val sessionId: String) : Action()
+        data class SendPlay(val presentationUrl: String, val sessionId: String?) : Action()
         object StreamStarted : Action()
         object StreamPaused : Action()
         object SessionClosed : Action()
@@ -65,18 +65,18 @@ internal class WfdSession(
 
         if (requested.isEmpty()) return ""
 
-        return CAPABILITIES
-            .filterKeys { it in requested }
-            .entries
-            .joinToString(separator = "\r\n", postfix = if (requested.isEmpty()) "" else "\r\n") {
-                (name, value) ->
-                val resolved = if (name == "wfd_client_rtp_ports") {
-                    "RTP/AVP/UDP;unicast $rtpPort $rtcpPort mode=play"
-                } else {
-                    value
-                }
-                "$name: $resolved"
+        val entries = CAPABILITIES.filterKeys { it in requested }.entries
+        if (entries.isEmpty()) return ""
+
+        return entries.joinToString(separator = "\r\n", postfix = "\r\n") {
+            (name, value) ->
+            val resolved = if (name == "wfd_client_rtp_ports") {
+                "RTP/AVP/UDP;unicast $rtpPort $rtcpPort mode=play"
+            } else {
+                value
             }
+            "$name: $resolved"
+        }
     }
 
     /**
@@ -109,10 +109,14 @@ internal class WfdSession(
             "PLAY" -> {
                 val url = presentationUrl
                     ?: return Action.ProtocolError(400, "Missing wfd_presentation_URL")
-                val id = sessionId
-                    ?: return Action.ProtocolError(455, "PLAY before SETUP")
+                if (state != State.SETUP_REQUESTED &&
+                    state != State.PLAY_REQUESTED &&
+                    sessionId == null
+                ) {
+                    return Action.ProtocolError(455, "PLAY before SETUP")
+                }
                 state = State.PLAY_REQUESTED
-                Action.SendPlay(url, id)
+                Action.SendPlay(url, sessionId)
             }
             "PAUSE" -> {
                 if (state != State.STREAMING) {
@@ -139,13 +143,13 @@ internal class WfdSession(
             return Action.ProtocolError(statusCode, "Source rejected SETUP")
         }
 
-        val rawSession = header(headers, "Session")
-            ?: return Action.ProtocolError(500, "SETUP response missing Session")
-        val id = rawSession.substringBefore(';').trim()
-        if (id.isEmpty()) {
-            return Action.ProtocolError(500, "SETUP response has empty Session")
-        }
+        val id = header(headers, "Session")
+            ?.substringBefore(';')
+            ?.trim()
+            ?.takeIf { it.isNotEmpty() }
 
+        // Some older WFD sources omit Session entirely. M7 is still valid; in
+        // that case send PLAY without fabricating a receiver-owned session ID.
         sessionId = id
         state = State.PLAY_REQUESTED
         val url = presentationUrl
@@ -189,12 +193,14 @@ internal class WfdSession(
         private val CAPABILITIES = linkedMapOf(
             "wfd_audio_codecs" to "LPCM 00000002 00",
             "wfd_video_formats" to
-                "00 00 02 10 0001FFFF 00000000 00000000 00 0000 0000 00 none none",
+                "00 00 03 10 0001FFFF 1FFFFFFF 00000FFF 00 0000 0000 00 none none",
+            "wfd_3d_video_formats" to "none",
             "wfd_client_rtp_ports" to "",
             "wfd_content_protection" to "none",
             "wfd_display_edid" to "none",
             "wfd_coupled_sink" to "none",
-            "wfd_connector_type" to "05"
+            "wfd_connector_type" to "05",
+            "wfd_idr_request_capability" to "1"
         )
     }
 }
