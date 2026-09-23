@@ -236,7 +236,7 @@ internal class MiracastReceiver(
         }
     }
 
-    @SuppressLint("MissingPermission")
+    @SuppressLint("MissingPermission", "NewApi")
     private fun refreshP2pControlConnection() {
         val manager = wifiP2pManager ?: return
         val activeChannel = channel ?: return
@@ -264,9 +264,13 @@ internal class MiracastReceiver(
 
                 val groupOwnerHost = info.groupOwnerAddress?.hostAddress
                 manager.requestGroupInfo(activeChannel) { group ->
-                    val advertisedPort = runCatching {
-                        group?.owner?.wfdInfo?.controlPort
-                    }.getOrNull()
+                    val advertisedPort = if (sdkInt >= 30) {
+                        runCatching { group?.owner?.wfdInfo?.controlPort }.getOrNull()
+                    } else {
+                        // WifiP2pDevice.getWfdInfo() is public only from API 30.
+                        // Older Fire TV / Android releases use the WFD default.
+                        null
+                    }
 
                     val endpoint = WfdControlEndpointResolver.resolve(
                         groupFormed = true,
