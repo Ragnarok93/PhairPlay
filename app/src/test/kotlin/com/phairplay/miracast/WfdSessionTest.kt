@@ -19,6 +19,21 @@ class WfdSessionTest {
         assertTrue(body.contains("wfd_client_rtp_ports: RTP/AVP/UDP;unicast 19000 0 mode=play"))
     }
 
+
+    @Test
+    fun `capability response does not claim unimplemented IDR or RTCP capability`() {
+        val session = WfdSession(rtpPort = 19000, rtcpPort = 19001)
+
+        val body = session.capabilityResponse(
+            "wfd_client_rtp_ports\r\nwfd_idr_request_capability\r\n"
+        )
+
+        assertTrue(
+            body.contains("wfd_client_rtp_ports: RTP/AVP/UDP;unicast 19000 0 mode=play")
+        )
+        assertTrue(body.contains("wfd_idr_request_capability: 0"))
+    }
+
     @Test
     fun `SETUP trigger requires presentation URL and asks sink to send SETUP`() {
         val session = WfdSession(rtpPort = 19000)
