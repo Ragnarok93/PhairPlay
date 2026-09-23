@@ -261,9 +261,8 @@ internal class CastMediaController(
         Logger.w(message)
         return MediaException(
             MediaError.Builder()
-                .setType(MediaError.ERROR_TYPE_LOAD_FAILED)
-                .setReason(MediaError.ERROR_REASON_INVALID_REQUEST)
                 .setDetailedErrorCode(MediaError.DetailedErrorCode.LOAD_FAILED)
+                .setReason(MediaError.ERROR_REASON_INVALID_REQUEST)
                 .build()
         )
     }
