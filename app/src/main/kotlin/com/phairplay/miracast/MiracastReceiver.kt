@@ -1,7 +1,6 @@
 package com.phairplay.miracast
 
 import android.content.Context
-import android.content.pm.PackageManager
 import android.net.wifi.p2p.WifiP2pManager
 import android.net.wifi.p2p.WifiP2pManager.Channel
 import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
@@ -133,9 +132,23 @@ class MiracastReceiver(
      * don't support it), [wifiP2pManager] will be null and we emit an ERROR state.
      */
     private fun initializeWifiP2p() {
+        if (!WifiDirectCompat.isWifiDirectAvailable(context)) {
+            Logger.w("Wi-Fi Direct is not available on this device — Miracast disabled")
+            onStateChanged(ProtocolState.DISABLED)
+            return
+        }
+        if (!WifiDirectCompat.hasRequiredPermission(context)) {
+            Logger.w(
+                "Missing Wi-Fi Direct runtime permission for API ${Build.VERSION.SDK_INT}: " +
+                    WifiDirectCompat.requiredRuntimePermissions().joinToString()
+            )
+            onStateChanged(ProtocolState.ERROR)
+            return
+        }
+
         wifiP2pManager = context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
         if (wifiP2pManager == null) {
-            Logger.w("WifiP2pManager not available on this device — Miracast not supported")
+            Logger.w("WifiP2pManager disappeared after capability check")
             onStateChanged(ProtocolState.ERROR)
             return
         }
@@ -203,7 +216,7 @@ class MiracastReceiver(
             onStateChanged(ProtocolState.ERROR)
             return
         }
-        if (!hasWifiP2pPermission()) {
+        if (!WifiDirectCompat.hasRequiredPermission(context)) {
             Logger.w("Cannot register Miracast P2P service: missing Wi-Fi Direct permission")
             onStateChanged(ProtocolState.ERROR)
             return
@@ -251,19 +264,10 @@ class MiracastReceiver(
         }
     }
 
-    private fun hasWifiP2pPermission(): Boolean {
-        return context.checkSelfPermission(PERMISSION_NEARBY_WIFI_DEVICES) ==
-            PackageManager.PERMISSION_GRANTED ||
-            context.checkSelfPermission(PERMISSION_ACCESS_FINE_LOCATION) ==
-            PackageManager.PERMISSION_GRANTED
-    }
-
     companion object {
         const val WFD_RTSP_PORT = 7236
         private const val SERVICE_INSTANCE_NAME = "PhairPlay"
         private const val SERVICE_TYPE_WFD = "_wfd._tcp"
-        private const val PERMISSION_ACCESS_FINE_LOCATION = "android.permission.ACCESS_FINE_LOCATION"
-        private const val PERMISSION_NEARBY_WIFI_DEVICES = "android.permission.NEARBY_WIFI_DEVICES"
     }
 }
 
