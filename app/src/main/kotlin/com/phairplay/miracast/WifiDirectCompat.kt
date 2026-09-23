@@ -12,6 +12,7 @@ import android.os.Build
  * Direct runtime authorization from location to NEARBY_WIFI_DEVICES.
  */
 internal object WifiDirectCompat {
+    enum class ListenStrategy { LEGACY_DISCOVERY, EXPLICIT_LISTEN }
     const val PERMISSION_FINE_LOCATION = "android.permission.ACCESS_FINE_LOCATION"
     const val PERMISSION_NEARBY_WIFI_DEVICES = "android.permission.NEARBY_WIFI_DEVICES"
 
@@ -21,6 +22,10 @@ internal object WifiDirectCompat {
             apiLevel >= 33 -> setOf(PERMISSION_NEARBY_WIFI_DEVICES)
             else -> setOf(PERMISSION_FINE_LOCATION)
         }
+
+    fun listenStrategy(apiLevel: Int = Build.VERSION.SDK_INT): ListenStrategy =
+        if (apiLevel >= 33) ListenStrategy.EXPLICIT_LISTEN
+        else ListenStrategy.LEGACY_DISCOVERY
 
     fun hasRequiredPermission(
         context: Context,
