@@ -34,6 +34,6 @@ internal object WifiDirectCompat {
     }
 
     fun isWifiDirectAvailable(context: Context): Boolean =
-        context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT) &&
-            context.getSystemService(Context.WIFI_P2P_SERVICE) != null
+        context.getSystemService(Context.WIFI_P2P_SERVICE) != null &&
+            context.packageManager.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT)
 }
