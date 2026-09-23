@@ -13,6 +13,7 @@ import android.os.Build
  */
 internal object WifiDirectCompat {
     enum class ListenStrategy { LEGACY_DISCOVERY, EXPLICIT_LISTEN }
+    const val PERMISSION_COARSE_LOCATION = "android.permission.ACCESS_COARSE_LOCATION"
     const val PERMISSION_FINE_LOCATION = "android.permission.ACCESS_FINE_LOCATION"
     const val PERMISSION_NEARBY_WIFI_DEVICES = "android.permission.NEARBY_WIFI_DEVICES"
 
@@ -20,7 +21,7 @@ internal object WifiDirectCompat {
         when {
             apiLevel < 25 -> emptySet()
             apiLevel >= 33 -> setOf(PERMISSION_NEARBY_WIFI_DEVICES)
-            else -> setOf(PERMISSION_FINE_LOCATION)
+            else -> setOf(PERMISSION_COARSE_LOCATION, PERMISSION_FINE_LOCATION)
         }
 
     fun listenStrategy(apiLevel: Int = Build.VERSION.SDK_INT): ListenStrategy =
