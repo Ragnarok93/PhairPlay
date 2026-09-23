@@ -1,7 +1,10 @@
 package com.phairplay.miracast
 
 import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.net.wifi.p2p.WifiP2pManager
 import android.net.wifi.p2p.WifiP2pManager.Channel
 import android.net.wifi.p2p.nsd.WifiP2pDnsSdServiceInfo
@@ -9,6 +12,7 @@ import android.os.Build
 import com.phairplay.airplay.RtspRequest
 import com.phairplay.airplay.RtspRequestReader
 import com.phairplay.airplay.RtspResponse
+import androidx.core.content.ContextCompat
 import com.phairplay.service.ProtocolState
 import com.phairplay.util.Logger
 import kotlinx.coroutines.CoroutineScope
@@ -18,6 +22,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.io.OutputStream
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 
@@ -76,6 +81,19 @@ internal class MiracastReceiver(
     @Volatile
     private var isListening = false
 
+    @Volatile
+    private var p2pConnectionReceiverRegistered = false
+
+    private var lastOutboundEndpoint: WfdControlEndpoint? = null
+
+    private val p2pConnectionReceiver = object : BroadcastReceiver() {
+        override fun onReceive(receiverContext: Context?, intent: Intent?) {
+            if (intent?.action == WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION) {
+                refreshP2pControlConnection()
+            }
+        }
+    }
+
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
     private val rtspServer = WfdRtspServer(
@@ -113,6 +131,7 @@ internal class MiracastReceiver(
     fun stop() {
         Logger.i("MiracastReceiver stopping")
         try {
+            unregisterP2pConnectionReceiver()
             stopP2pListening()
             stopP2pAdvertisement()
             rtspServer.stop()
@@ -175,9 +194,99 @@ internal class MiracastReceiver(
             }
         )
 
+        registerP2pConnectionReceiver()
         Logger.i("WifiP2pManager initialized — registering P2P service")
         registerP2pService()
     }
+
+    /**
+     * Tracks P2P group formation so the sink can open the WFD RTSP control
+     * connection to the source. This uses APIs present since API 14, preserving
+     * the Fire OS 6 / API 25 floor.
+     */
+    private fun registerP2pConnectionReceiver() {
+        if (p2pConnectionReceiverRegistered) return
+        val filter = IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+        ContextCompat.registerReceiver(
+            context,
+            p2pConnectionReceiver,
+            filter,
+            ContextCompat.RECEIVER_EXPORTED
+        )
+        p2pConnectionReceiverRegistered = true
+
+        // Cover an already-formed group when the receiver is restarted while
+        // Wi-Fi Direct remains connected.
+        refreshP2pControlConnection()
+    }
+
+    private fun unregisterP2pConnectionReceiver() {
+        if (!p2pConnectionReceiverRegistered) return
+        try {
+            context.unregisterReceiver(p2pConnectionReceiver)
+        } catch (e: IllegalArgumentException) {
+            Logger.w("Miracast P2P connection receiver was already unregistered")
+        } finally {
+            p2pConnectionReceiverRegistered = false
+            lastOutboundEndpoint = null
+        }
+    }
+
+    @SuppressLint("MissingPermission")
+    private fun refreshP2pControlConnection() {
+        val manager = wifiP2pManager ?: return
+        val activeChannel = channel ?: return
+        if (!WifiDirectCompat.hasRequiredPermission(context, sdkInt)) return
+
+        try {
+            manager.requestConnectionInfo(activeChannel) { info ->
+                if (info == null || !info.groupFormed) {
+                    lastOutboundEndpoint = null
+                    rtspServer.disconnectActiveSession()
+                    return@requestConnectionInfo
+                }
+
+                if (info.isGroupOwner) {
+                    // Public API 25 does not expose the P2P client's IP to the
+                    // group owner. Keep the inbound RTSP listener as a
+                    // compatibility fallback instead of using hidden APIs.
+                    lastOutboundEndpoint = null
+                    Logger.d(
+                        "Miracast sink is P2P group owner; retaining inbound RTSP fallback"
+                    )
+                    return@requestConnectionInfo
+                }
+
+                val groupOwnerHost = info.groupOwnerAddress?.hostAddress
+                manager.requestGroupInfo(activeChannel) { group ->
+                    val advertisedPort = runCatching {
+                        group?.owner?.wfdInfo?.controlPort
+                    }.getOrNull()
+
+                    val endpoint = WfdControlEndpointResolver.resolve(
+                        groupFormed = true,
+                        sinkIsGroupOwner = false,
+                        groupOwnerHost = groupOwnerHost,
+                        advertisedControlPort = advertisedPort
+                    ) ?: return@requestGroupInfo
+
+                    if (endpoint == lastOutboundEndpoint && rtspServer.hasActiveSession()) {
+                        return@requestGroupInfo
+                    }
+
+                    lastOutboundEndpoint = endpoint
+                    Logger.i(
+                        "Miracast P2P source resolved at " +
+                            "${endpoint.host}:${endpoint.port}; opening WFD RTSP control"
+                    )
+                    rtspServer.connectToSource(endpoint, scope)
+                }
+            }
+        } catch (e: SecurityException) {
+            Logger.e("Missing permission while resolving Miracast P2P connection", e)
+        }
+    }
+
 
     /**
      * Stops the P2P service advertisement.
@@ -358,6 +467,7 @@ internal class WfdRtspServer(
     @Volatile private var running = false
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var activeClient: Socket? = null
+    @Volatile private var outboundConnecting = false
 
     // A deterministic non-zero session is available to direct unit tests of routeRequest().
     // A real client connection replaces it with ports allocated by MiracastMediaReceiver.
@@ -376,6 +486,62 @@ internal class WfdRtspServer(
         running = true
         scope.launch(Dispatchers.IO) {
             runServer(this)
+        }
+    }
+
+    fun hasActiveSession(): Boolean =
+        activeClient?.let { it.isConnected && !it.isClosed } == true
+
+    fun connectToSource(endpoint: WfdControlEndpoint, scope: CoroutineScope) {
+        if (!running || hasActiveSession() || outboundConnecting) return
+
+        synchronized(this) {
+            if (!running || hasActiveSession() || outboundConnecting) return
+            outboundConnecting = true
+        }
+
+        scope.launch(Dispatchers.IO) {
+            var socket: Socket? = null
+            try {
+                socket = Socket()
+                socket.connect(
+                    InetSocketAddress(endpoint.host, endpoint.port),
+                    CONTROL_CONNECT_TIMEOUT_MS
+                )
+
+                if (!tryClaimClient(socket)) {
+                    socket.close()
+                    return@launch
+                }
+
+                Logger.i(
+                    "WFD RTSP outbound control connected to " +
+                        "${endpoint.host}:${endpoint.port}"
+                )
+                handleClient(socket, scope)
+            } catch (e: Exception) {
+                if (running) {
+                    Logger.w(
+                        "Unable to connect WFD RTSP control to " +
+                            "${endpoint.host}:${endpoint.port}: ${e.message}"
+                    )
+                }
+                try {
+                    socket?.close()
+                } catch (_: Exception) {
+                    // Best-effort cleanup.
+                }
+            } finally {
+                outboundConnecting = false
+            }
+        }
+    }
+
+    fun disconnectActiveSession() {
+        try {
+            activeClient?.close()
+        } catch (e: Exception) {
+            Logger.e("Error closing active WFD RTSP session (non-fatal)", e)
         }
     }
 
@@ -404,12 +570,11 @@ internal class WfdRtspServer(
             Logger.i("WFD RTSP server listening on port ${MiracastReceiver.WFD_RTSP_PORT}")
             while (running && scope.isActive) {
                 val client = serverSocket!!.accept()
-                if (activeClient != null && !activeClient!!.isClosed) {
+                if (!tryClaimClient(client)) {
                     sendServiceUnavailable(client)
                     client.close()
                     continue
                 }
-                activeClient = client
                 handleClient(client, scope)
             }
         } catch (e: Exception) {
@@ -476,7 +641,11 @@ internal class WfdRtspServer(
             } catch (e: Exception) {
                 Logger.e("Error closing WFD RTSP client socket (non-fatal)", e)
             }
-            activeClient = null
+            synchronized(this) {
+                if (activeClient === socket) {
+                    activeClient = null
+                }
+            }
             pendingOutboundMethods.clear()
             wfdSession.close()
             if (sessionStarted) {
@@ -485,6 +654,17 @@ internal class WfdRtspServer(
             }
         }
     }
+
+    @Synchronized
+    private fun tryClaimClient(socket: Socket): Boolean {
+        val current = activeClient
+        if (current != null && current.isConnected && !current.isClosed) {
+            return false
+        }
+        activeClient = socket
+        return true
+    }
+
 
     internal fun routeRequest(request: RtspRequest): RtspResponse {
         Logger.d("WFD RTSP ${request.method} ${request.uri}")
@@ -665,5 +845,6 @@ internal class WfdRtspServer(
         private const val MAX_MESSAGE_BYTES = 65_536
         private const val FALLBACK_SESSION_ID = "PhairPlayWfdSession"
         private const val TEST_RTP_PORT = 19_000
+        private const val CONTROL_CONNECT_TIMEOUT_MS = 5_000
     }
 }
