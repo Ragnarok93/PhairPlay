@@ -219,9 +219,17 @@ dependencies {
     // Binary property lists — AirPlay 2 handshake payloads (GET /info, SETUP)
     implementation(libs.ddplist)
 
-    // Google TV Cast Connect receiver SDK. Kept out of the Fire TV flavor because
-    // Fire TV lacks Google Play Services and cannot run Google Cast receiver APIs.
+    // Google TV Cast Connect + playback stack. All of these remain flavor-scoped:
+    // Fire TV OS 6+ (API 25) has no Google Play Services and must never package
+    // or class-load Cast Connect / Media3 receiver integration code.
     "googletvImplementation"(libs.play.services.cast.tv)
+    "googletvImplementation"(libs.play.services.cast)
+    "googletvImplementation"(libs.media3.exoplayer)
+    "googletvImplementation"(libs.media3.exoplayer.hls)
+    "googletvImplementation"(libs.media3.exoplayer.dash)
+    // Cast Connect currently accepts a MediaSessionCompat token. This bridge is
+    // Google-TV-only; shared and Fire TV code stay on the API-25-compatible path.
+    "googletvImplementation"(libs.androidx.media)
 
     // Unit Testing
     testImplementation(libs.junit)

@@ -17,6 +17,8 @@ import android.view.Surface
 import com.phairplay.airplay.AirPlayReceiver
 import com.phairplay.cast.CastReceiver
 import com.phairplay.miracast.MiracastReceiver
+import com.phairplay.miracast.MiracastPlayback
+import com.phairplay.media.PlaybackCoordinator
 import com.phairplay.settings.AppSettings
 import com.phairplay.settings.SettingsRepository
 import com.phairplay.util.Logger
@@ -29,6 +31,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * PhairPlayService — Android ForegroundService that hosts all receiver protocols.
@@ -93,7 +96,20 @@ class PhairPlayService : Service() {
     // Receiver instances — null when not running
     private var airPlayReceiver: AirPlayReceiver? = null
     private var miracastReceiver: MiracastReceiver? = null
+    private var miracastPlayback: MiracastPlayback? = null
     private var castReceiver: CastReceiver? = null
+
+    // A Cast LAUNCH/LOAD intent can arrive before the foreground service has
+    // completed asynchronous receiver startup. Preserve the latest intent and
+    // deliver it after CastReceiver is initialized.
+    @Volatile private var pendingCastIntent: Intent? = null
+
+    // Receiver protocols may advertise concurrently, but only one connected
+    // protocol may own the shared video/audio playback path at a time.
+    private val playbackCoordinator = PlaybackCoordinator()
+    private val playbackLock = Any()
+    private val suppressedProtocols = mutableSetOf<Protocol>()
+    @Volatile private var playbackRestoreEnabled = false
 
     // Settings — read once when starting, re-read on restart
     private lateinit var settingsRepository: SettingsRepository
@@ -150,6 +166,24 @@ class PhairPlayService : Service() {
      */
     fun setVideoSurfaceProvider(provider: () -> Surface?) {
         videoSurfaceProvider = provider
+        castReceiver?.updateVideoSurface(
+            if (playbackCoordinator.canUse(Protocol.CAST)) provider() else null
+        )
+        miracastPlayback?.onSurfaceChanged()
+    }
+
+    /**
+     * Routes Google TV Cast Connect LAUNCH/LOAD intents without exposing any
+     * Google Play Services type to shared code. Fire TV's CastReceiver simply
+     * returns false.
+     */
+    fun handleCastIntent(intent: Intent): Boolean {
+        val receiver = castReceiver
+        if (receiver == null) {
+            pendingCastIntent = Intent(intent)
+            return false
+        }
+        return receiver.handleIntent(intent)
     }
 
     /**
@@ -178,6 +212,7 @@ class PhairPlayService : Service() {
      */
     private suspend fun startReceivers() {
         val settings = settingsRepository.settingsFlow.first()
+        playbackRestoreEnabled = true
         Logger.i("Starting receivers: AirPlay=${settings.airPlayEnabled}, Miracast=${settings.miracastEnabled}, Cast=${settings.castEnabled}")
 
         _serviceState.value = ServiceState.Running
@@ -194,6 +229,7 @@ class PhairPlayService : Service() {
      */
     private fun stopReceivers() {
         Logger.i("Stopping all receivers")
+        playbackRestoreEnabled = false
         stopAllReceiversInternal()
         _serviceState.value = ServiceState.Stopped
         _activeConnection.value = null
@@ -206,6 +242,7 @@ class PhairPlayService : Service() {
      */
     private suspend fun restartReceivers() {
         Logger.i("Restarting all receivers")
+        playbackRestoreEnabled = false
         _serviceState.value = ServiceState.Restarting
         updateNotification(isRunning = false)
         stopAllReceiversInternal()
@@ -253,7 +290,13 @@ class PhairPlayService : Service() {
             pinAuthEnabled = settings.airPlayPinAuthEnabled,
             // Delegate to the current provider at call time — captures the field, not a fixed value.
             // When MainActivity calls setVideoSurfaceProvider(), future surface requests use it.
-            videoSurfaceProvider = { videoSurfaceProvider?.invoke() },
+            videoSurfaceProvider = {
+                if (playbackCoordinator.canUse(Protocol.AIRPLAY)) {
+                    videoSurfaceProvider?.invoke()
+                } else {
+                    null
+                }
+            },
             onSenderNameChanged = { name ->
                 pendingSenderName = name.ifEmpty { "AirPlay Sender" }
             },
@@ -275,51 +318,231 @@ class PhairPlayService : Service() {
             },
             onStateChanged = { state ->
                 _airPlayState.value = state
-                when (state) {
-                    ProtocolState.CONNECTED   -> {
-                        _photoFrame.value = null
-                        _activeConnection.value =
-                            ActiveConnection(pendingSenderName, Protocol.AIRPLAY)
-                        updateNotification(isRunning = true, streamingSenderName = pendingSenderName)
-                    }
-                    ProtocolState.ADVERTISING,
-                    ProtocolState.DISABLED,
-                    ProtocolState.ERROR       -> {
-                        _activeConnection.value = null
-                        updateNotification(isRunning = state != ProtocolState.DISABLED &&
-                                                       state != ProtocolState.ERROR)
-                    }
+                if (state == ProtocolState.CONNECTED) {
+                    _photoFrame.value = null
                 }
+                handleProtocolState(
+                    protocol = Protocol.AIRPLAY,
+                    state = state,
+                    senderName = pendingSenderName
+                )
             }
         ).also { it.start() }
         Logger.d("AirPlay receiver started (displayName='${settings.effectiveDisplayName}')")
     }
 
     private fun startMiracast() {
+        if (miracastReceiver != null) {
+            Logger.i("Miracast receiver already running — skipping duplicate start")
+            return
+        }
+
         _miracastState.value = ProtocolState.ADVERTISING
+        val playback = MiracastPlayback(
+            surfaceProvider = {
+                if (playbackCoordinator.canUse(Protocol.MIRACAST)) {
+                    videoSurfaceProvider?.invoke()
+                } else {
+                    null
+                }
+            }
+        )
+        miracastPlayback = playback
+
         miracastReceiver = MiracastReceiver(
             context = applicationContext,
-            onStateChanged = { state -> _miracastState.value = state }
+            onStateChanged = { state ->
+                _miracastState.value = state
+                handleProtocolState(
+                    protocol = Protocol.MIRACAST,
+                    state = state,
+                    senderName = "Miracast Sender"
+                )
+            },
+            onMediaSample = playback::onSample
         ).also { it.start() }
         Logger.d("Miracast receiver started")
     }
 
-    private fun startCast() {
+    private suspend fun startCast() = withContext(Dispatchers.Main.immediate) {
+        if (castReceiver != null) {
+            Logger.i("Cast receiver already running — skipping duplicate start")
+            return@withContext
+        }
+
         _castState.value = ProtocolState.ADVERTISING
         castReceiver = CastReceiver(
             context = applicationContext,
-            onStateChanged = { state -> _castState.value = state }
+            surfaceProvider = {
+                if (playbackCoordinator.canUse(Protocol.CAST)) {
+                    videoSurfaceProvider?.invoke()
+                } else {
+                    null
+                }
+            },
+            onStateChanged = { state ->
+                _castState.value = state
+                handleProtocolState(
+                    protocol = Protocol.CAST,
+                    state = state,
+                    senderName = "Cast Sender"
+                )
+            }
         ).also { it.start() }
+
+        pendingCastIntent?.let { pending ->
+            castReceiver?.handleIntent(pending)
+            pendingCastIntent = null
+        }
         Logger.d("Cast receiver started")
     }
 
+    private fun handleProtocolState(
+        protocol: Protocol,
+        state: ProtocolState,
+        senderName: String
+    ) {
+        if (state == ProtocolState.CONNECTED) {
+            if (!playbackCoordinator.tryAcquire(protocol)) {
+                val owner = playbackCoordinator.owner
+                Logger.w(
+                    "Rejecting $protocol playback while shared playback is owned by $owner"
+                )
+                synchronized(playbackLock) {
+                    suppressedProtocols += protocol
+                }
+                serviceScope.launch { suppressConflictingProtocol(protocol) }
+                return
+            }
+
+            if (protocol != Protocol.AIRPLAY) {
+                // AirPlay-specific overlays must never cover a Miracast/Cast owner.
+                _photoFrame.value = null
+                _nowPlaying.value = null
+                _pairingPin.value = null
+            }
+            _activeConnection.value = ActiveConnection(senderName, protocol)
+            updateNotification(isRunning = true, streamingSenderName = senderName)
+            return
+        }
+
+        val released = playbackCoordinator.release(protocol)
+        if (_activeConnection.value?.protocol == protocol) {
+            _activeConnection.value = null
+        }
+
+        val active = _activeConnection.value
+        if (active != null) {
+            updateNotification(isRunning = true, streamingSenderName = active.senderName)
+        } else {
+            updateNotification(
+                isRunning = state != ProtocolState.DISABLED &&
+                    state != ProtocolState.ERROR
+            )
+        }
+
+        if (released && playbackRestoreEnabled) {
+            serviceScope.launch { restoreSuppressedProtocols() }
+        }
+    }
+
+    private suspend fun suppressConflictingProtocol(protocol: Protocol) {
+        when (protocol) {
+            Protocol.AIRPLAY -> {
+                val receiver = airPlayReceiver
+                airPlayReceiver = null
+                _photoFrame.value = null
+                _nowPlaying.value = null
+                _pairingPin.value = null
+                try {
+                    receiver?.stop()
+                } catch (e: Exception) {
+                    Logger.e("AirPlay conflict shutdown error", e)
+                }
+            }
+            Protocol.MIRACAST -> {
+                val receiver = miracastReceiver
+                val playback = miracastPlayback
+                miracastReceiver = null
+                miracastPlayback = null
+                try {
+                    receiver?.stop()
+                } catch (e: Exception) {
+                    Logger.e("Miracast conflict shutdown error", e)
+                }
+                try {
+                    playback?.release()
+                } catch (e: Exception) {
+                    Logger.e("Miracast conflict playback release error", e)
+                }
+            }
+            Protocol.CAST -> withContext(Dispatchers.Main.immediate) {
+                val receiver = castReceiver
+                castReceiver = null
+                try {
+                    receiver?.stop()
+                } catch (e: Exception) {
+                    Logger.e("Cast conflict shutdown error", e)
+                }
+            }
+        }
+
+        // The owner may have ended while this shutdown was in flight. Re-run
+        // restoration after the losing receiver is definitely detached so it
+        // cannot be stranded by that race.
+        if (playbackRestoreEnabled && playbackCoordinator.owner == null) {
+            restoreSuppressedProtocols()
+        }
+    }
+
+    private suspend fun restoreSuppressedProtocols() {
+        if (!playbackRestoreEnabled || playbackCoordinator.owner != null) return
+
+        val pending = synchronized(playbackLock) {
+            suppressedProtocols.toSet()
+        }
+        if (pending.isEmpty()) return
+
+        val settings = settingsRepository.settingsFlow.first()
+
+        suspend fun markRestored(protocol: Protocol) {
+            synchronized(playbackLock) {
+                suppressedProtocols.remove(protocol)
+            }
+        }
+
+        if (Protocol.AIRPLAY in pending && airPlayReceiver == null) {
+            if (settings.airPlayEnabled) startAirPlay(settings)
+            markRestored(Protocol.AIRPLAY)
+        }
+        if (Protocol.MIRACAST in pending &&
+            miracastReceiver == null &&
+            miracastPlayback == null
+        ) {
+            if (settings.miracastEnabled) startMiracast()
+            markRestored(Protocol.MIRACAST)
+        }
+        if (Protocol.CAST in pending && castReceiver == null) {
+            if (settings.castEnabled) startCast()
+            markRestored(Protocol.CAST)
+        }
+    }
+
     private fun stopAllReceiversInternal() {
+        playbackRestoreEnabled = false
+        playbackCoordinator.reset()
+        synchronized(playbackLock) {
+            suppressedProtocols.clear()
+        }
         try { airPlayReceiver?.stop() } catch (e: Exception) { Logger.e("AirPlay stop error", e) }
         try { miracastReceiver?.stop() } catch (e: Exception) { Logger.e("Miracast stop error", e) }
+        try { miracastPlayback?.release() } catch (e: Exception) { Logger.e("Miracast playback stop error", e) }
         try { castReceiver?.stop() } catch (e: Exception) { Logger.e("Cast stop error", e) }
         airPlayReceiver = null
         miracastReceiver = null
+        miracastPlayback = null
         castReceiver = null
+        pendingCastIntent = null
         _airPlayState.value = ProtocolState.DISABLED
         _miracastState.value = ProtocolState.DISABLED
         _castState.value = ProtocolState.DISABLED

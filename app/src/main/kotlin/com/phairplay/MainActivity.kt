@@ -22,6 +22,7 @@ import com.phairplay.service.ProtocolState
 import com.phairplay.service.ServiceController
 import com.phairplay.airplay.NowPlayingInfo
 import com.phairplay.ui.HomeFragment
+import com.phairplay.miracast.WifiDirectCompat
 import com.phairplay.ui.NowPlayingScreen
 import com.phairplay.ui.PhotoScreen
 import com.phairplay.ui.PinScreen
@@ -67,6 +68,8 @@ class MainActivity : AppCompatActivity() {
     private var service: PhairPlayService? = null
     private var isBound = false
     private var currentAirPlayState = ProtocolState.DISABLED
+    private var currentMiracastState = ProtocolState.DISABLED
+    private var currentCastState = ProtocolState.DISABLED
     private var currentPhotoFrame: PhotoFrame? = null
     private var currentNowPlaying: NowPlayingInfo? = null
     private var currentPin: String? = null
@@ -77,8 +80,9 @@ class MainActivity : AppCompatActivity() {
             isBound = true
             Timber.d("MainActivity: bound to PhairPlayService")
 
-            // Wire the streaming Surface so the service can pass it to VideoDecoder
+            // Wire the streaming Surface so all video receiver paths can use it.
             service?.setVideoSurfaceProvider { getVideoSurface() }
+            service?.handleCastIntent(intent)
 
             // Show/hide the full-screen overlay for video streams and photos.
             observeOverlayState()
@@ -111,8 +115,15 @@ class MainActivity : AppCompatActivity() {
         // Start the service immediately so it's running before any sender discovers us
         ServiceController.start(this)
 
-        // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS
+        // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS.
         requestNotificationPermission()
+        requestWifiDirectPermission()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        service?.handleCastIntent(intent)
     }
 
     override fun onStart() {
@@ -330,8 +341,41 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun requestWifiDirectPermission() {
+        if (!WifiDirectCompat.isWifiDirectAvailable(this)) return
+
+        val missingPermissions = WifiDirectCompat.requiredRuntimePermissions()
+            .filter { permission ->
+                ContextCompat.checkSelfPermission(this, permission) !=
+                    PackageManager.PERMISSION_GRANTED
+            }
+
+        if (missingPermissions.isNotEmpty()) {
+            ActivityCompat.requestPermissions(
+                this,
+                missingPermissions.toTypedArray(),
+                PERMISSION_REQUEST_WIFI_DIRECT
+            )
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == PERMISSION_REQUEST_WIFI_DIRECT &&
+            grantResults.isNotEmpty() &&
+            grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+        ) {
+            ServiceController.restart(this)
+        }
+    }
+
     companion object {
         private const val PERMISSION_REQUEST_NOTIFICATIONS = 1001
+        private const val PERMISSION_REQUEST_WIFI_DIRECT = 1002
     }
 
     // ─── Streaming overlay ────────────────────────────────────────────────────
@@ -348,6 +392,18 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             svc.airPlayState.collectLatest { state ->
                 currentAirPlayState = state
+                updateOverlay()
+            }
+        }
+        lifecycleScope.launch {
+            svc.miracastState.collectLatest { state ->
+                currentMiracastState = state
+                updateOverlay()
+            }
+        }
+        lifecycleScope.launch {
+            svc.castState.collectLatest { state ->
+                currentCastState = state
                 updateOverlay()
             }
         }
@@ -381,7 +437,9 @@ class MainActivity : AppCompatActivity() {
             // Audio-only AirPlay (system audio, Music, podcasts): show the now-playing card instead
             // of the black video surface. Set whenever audio plays without video.
             nowPlaying != null -> showNowPlayingScreen(nowPlaying)
-            currentAirPlayState == ProtocolState.CONNECTED -> showStreamingScreen()
+            currentAirPlayState == ProtocolState.CONNECTED ||
+                currentMiracastState == ProtocolState.CONNECTED ||
+                currentCastState == ProtocolState.CONNECTED -> showStreamingScreen()
             photoFrame != null -> showPhotoScreen(photoFrame)
             else -> hideStreamingScreen()
         }

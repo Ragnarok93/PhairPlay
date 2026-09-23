@@ -28,8 +28,8 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 | 3 | M3 – AirPlay Handshake | ✅ Complete | Full RTSP router, SDP parsing, plist codec, pairing (Ed25519/X25519 + SRP), FairPlay fp-setup, `/photo` endpoint, 247 unit tests |
 | 4 | M4 – AirPlay Video | ✅ Complete | H.264 via MirrorStreamServer + MirrorCrypto (AES-128-CTR), MediaCodec with SPS-driven reinit and self-heal, aspect-fit rendering; real-device validation ongoing |
 | 5 | M5 – AirPlay Audio | ✅ Complete | AAC-ELD/AAC-LC (AudioStreamServer), ALAC (AlacDecoder + libalac), AES-128-CBC, NTP sync, DACP reverse remote, NowPlayingScreen; real-device validation ongoing |
-| 6 | M6 – Miracast | 🔄 Started | Wi-Fi Direct/WFD advertising and RTSP control-plane implemented; MPEG-TS, HDCP, and A/V playback pending |
-| 7 | M7 – Google Cast | 🔄 Started | Google TV Cast Connect SDK lifecycle implemented; full testing requires registered Cast app ID |
+| 6 | M6 – Miracast | 🔄 Hardware validation | WFD RTSP + RTP/MPEG-TS + H.264/LPCM playback implemented; native WFD IE/HDCP depend on platform privileges |
+| 7 | M7 – Google Cast | 🔄 Hardware validation | Cast Connect MediaManager + Media3 progressive/HLS/DASH playback implemented; registered Cast app ID required for E2E validation |
 | 8 | M8 – Stability | ⏳ Pending | |
 | 9 | M9 – Fire TV | 🔄 In Progress | Signed Fire TV APK released (v1.0.0-beta.1); real Fire TV A/V validation pending |
 | 10 | M10 – i18n | 🔄 Partial | EN/DE resource structure exists; full UX string audit pending |
@@ -176,94 +176,81 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 
 ---
 
-## Phase 6 – Miracast Receiver (full codec matrix)
+## Phase 6 – Miracast Receiver
 
 **Milestone:** M6
 
-**Goal:** Miracast screen mirroring from Windows 10+ and Android with full WFD codec matrix.
+**Goal:** Standards-oriented unprotected Miracast/WFD playback from Windows/Android on devices whose Android build exposes sufficient Wi-Fi Direct receiver functionality.
 
-**Tasks:**
+**Implemented on this branch:**
 
 **Protocol and transport:**
-- [ ] `WifiDirectManager.kt` — full Wi-Fi P2P (peer discovery, connection accept)
-- [ ] `MiracastSession.kt` — WFD RTSP negotiation (capability exchange, `wfd-video-formats`, `wfd-audio-codecs`)
-- [ ] WFD capability advertisement: report supported video/audio codecs in WFD capability exchange
-- [ ] MPEG-TS demuxer: parse incoming MPEG Transport Stream; extract video/audio elementary streams
+- [x] API-aware Wi-Fi Direct capability/permission layer (API 25–35)
+- [x] DNS-SD WFD service advertisement and API-specific P2P listen/discovery mode
+- [x] WFD RTSP session model with requested-field capability exchange
+- [x] Standards-oriented sink→source RTSP control connection after Wi-Fi Direct group formation, with inbound port-7236 compatibility fallback
+- [x] Sink-originated RTSP SETUP / PLAY / PAUSE / TEARDOWN transactions from WFD trigger methods
+- [x] Adjacent even/odd RTP/RTCP UDP allocation; M3 advertises the primary RTP port without falsely claiming a second RTP port
+- [x] RTP v2 parsing with sequence-loss diagnostics
+- [x] MPEG-TS PAT/PMT/PES demux with PTS extraction and continuity recovery
 
-**Mandatory video (H.264):**
-- [ ] `MiracastDecoder.kt` — H.264 AVC decode via VideoDecoder (Constrained High Profile + Constrained Baseline Profile)
-- [ ] H.264 level negotiation: advertise up to Level 4.2 in WFD capability exchange
+**Mandatory media baseline:**
+- [x] H.264 AVC elementary-stream playback through hardware `MediaCodec`
+- [x] MPEG-TS PTS-driven video scheduling while preserving AirPlay's existing render policy
+- [x] WFD LPCM stream type `0x83`: 48 kHz / 16-bit / stereo to `AudioTrack`
+- [x] Shared TV Surface lifecycle integration and Miracast streaming overlay state
+- [x] Protocol-neutral playback ownership so AirPlay, Miracast, and Cast cannot simultaneously own the Surface/audio path
 
-**Optional video (H.265):**
-- [ ] Runtime HEVC capability check; advertise in WFD `wfd-video-formats` only if available
-- [ ] H.265 HEVC decode via extended VideoDecoder
+**Remaining interoperability work:**
+- [ ] Real-device Windows 10/11 and Android/Samsung WFD validation
+- [ ] Runtime H.264 profile/level capability generation instead of the conservative fixed WFD capability record
+- [ ] RTCP receiver reports / sender feedback if required by tested sources
+- [ ] Optional AAC / AC-3 and HEVC negotiation only after runtime decoder capability checks
+- [ ] Native WFD information-element advertisement on platforms where the app is granted the privileged `CONFIGURE_WIFI_DISPLAY` permission
+- [ ] HDCP 2.x protected-content path on hardware/firmware that exposes a legitimate receiver implementation
 
-**Mandatory audio (LPCM):**
-- [ ] `MiracastAudio.kt` — LPCM 16-bit / 48 kHz decode via AudioTrack direct pass-through
+**Platform constraint:** A normal third-party APK cannot obtain Android's signature/known-signer
+`CONFIGURE_WIFI_DISPLAY` permission. The public-API receiver therefore uses Wi-Fi P2P
+listen/discovery plus DNS-SD fallback. Native Windows `Win+K` discovery may require OEM/system-app
+integration on Android builds that do not expose an app-level WFD sink.
 
-**Optional audio (AAC, AC-3):**
-- [ ] AAC-LC / AAC-HE decode via MediaCodec; advertise in WFD `wfd-audio-codecs`
-- [ ] AC-3 (Dolby Digital) pass-through via AudioTrack `ENCODING_AC3` (if device supports)
-- [ ] Runtime audio capability check before advertising surround in WFD exchange
-
-**DRM / copy protection:**
-- [ ] Negotiate HDCP 2.x in WFD capability exchange (`wfd-content-protection`)
-- [ ] Graceful fallback if HDCP negotiation fails: reject session with WFD RTSP 403
-
-**UI:**
-- [ ] Miracast status card updates in HomeScreen (connecting, streaming, codec info in debug overlay)
-
-**Definition of Done:** AC-6.x — Windows 10 screen mirroring works end-to-end; LPCM and AAC audio work; H.265 works on capable hardware; HDCP negotiated.
+**Definition of Done for the open-source app path:** unprotected H.264 + mandatory LPCM
+mirroring works end-to-end on supported hardware without raising the Fire OS 6 / API 25 floor.
+Protected-content/HDCP support is a separate platform capability.
 
 ---
 
-## Phase 7 – Google Cast Receiver (full codec matrix)
+## Phase 7 – Google Cast Receiver
 
 **Milestone:** M7
 
-**Goal:** Google Cast screen mirroring and media casting from Chrome and Android, with full codec support matrix.
+**Goal:** Cast Connect media playback on Google TV/Android TV, without introducing Google Play Services dependencies into the Fire TV flavor.
 
-**Tasks:**
+**Implemented on this branch:**
+- [x] Cast Connect SDK lifecycle and manifest integration
+- [x] Current Cast TV + Cast framework dependencies scoped to `googletvImplementation`
+- [x] Media3 ExoPlayer playback controller
+- [x] Cast `MediaManager` LOAD handling and Activity intent routing
+- [x] `MediaSessionCompat` play/pause/seek/stop bridge and status propagation
+- [x] MP4/WebM/progressive playback through Media3
+- [x] HLS and DASH playback modules
+- [x] Shared TV Surface integration with idle/end/error Surface release
+- [x] Fire TV no-GMS compatibility implementation remains dependency-free and API-25-safe
+- [x] CI guard rejects Google Play Services / Media3 dependencies from the Fire TV runtime classpath
 
-**Setup:**
-- [ ] Register Cast application on Google Cast Developer Console
-- [x] Cast SDK lifecycle integration (CastReceiverContext)
-- [ ] Cast MediaManager load/playback command handling
-- [x] Graceful fallback on Fire TV (GMS not available — Cast reports disabled)
+**Remaining integration/validation work:**
+- [ ] Register/associate the production Cast application ID in Google Cast Developer Console
+- [ ] Validate Android/Chrome Cast LOAD, pause/resume, seek, reconnect, background/foreground, and end-of-stream on real Google TV hardware
+- [ ] Map Cast DRM configuration into Media3 for Widevine-protected content where licensing permits it
+- [ ] Add runtime track/capability reporting for optional HEVC/VP9/AV1/surround formats
 
-**Mandatory video (H.264 + VP8):**
-- [ ] H.264 AVC decode via VideoDecoder (all profiles including High Profile)
-- [ ] VP8 decode via MediaCodec `video/x-vnd.on2.vp8`
+**Scope clarification:** Cast Connect provides application media casting. It does not turn a
+third-party Android TV app into the operating system's generic Chromecast screen-mirroring
+receiver. Generic tab/desktop/screen mirroring remains outside this app-level receiver path.
 
-**Optional video (H.265, VP9, AV1):**
-- [ ] Runtime capability check for HEVC / VP9 / AV1 via `MediaCodecList`
-- [ ] VP9 decode via MediaCodec `video/x-vnd.on2.vp9` (API 23+)
-- [ ] H.265 HEVC decode via extended VideoDecoder (API 21+)
-- [ ] AV1 decode via MediaCodec `video/av01` (API 29+ SW, API 31+ HW preferred)
-- [ ] Report supported codecs to Cast SDK via `MediaCapabilities`
-
-**Mandatory audio (AAC-LC, AAC-HE, MP3, LPCM):**
-- [ ] AAC-LC / AAC-HE decode via MediaCodec
-- [ ] MP3 decode via MediaCodec `audio/mpeg`
-- [ ] LPCM / WAV pass-through via AudioTrack
-
-**Optional audio (Opus, FLAC, Dolby):**
-- [ ] Opus decode via MediaCodec `audio/opus` (API 21+)
-- [ ] FLAC decode via MediaCodec `audio/flac` (API 21+)
-- [ ] E-AC-3 / Dolby Atmos (JOC) pass-through (if device supports `ENCODING_E_AC3_JOC`)
-- [ ] Dolby Digital Plus (E-AC-3) pass-through (if device supports `ENCODING_E_AC3`)
-- [ ] Runtime audio capability check; report to Cast SDK
-
-**Container / streaming:**
-- [ ] MP4 / WebM container parsing (handled by Cast SDK)
-- [ ] HLS adaptive streaming (handled by Cast SDK ExoPlayer integration)
-- [ ] DASH adaptive streaming (handled by Cast SDK ExoPlayer integration)
-
-**DRM:**
-- [ ] Widevine L1/L3 via Android `MediaDrm` (handled automatically by Cast SDK)
-- [ ] PlayReady via Android `MediaDrm` (handled automatically by Cast SDK)
-
-**Definition of Done:** AC-7.x — Cast from Chrome works on Google TV; H.264 + VP8 mandatory; optional codecs negotiated at runtime; DRM-free streams play; Widevine-protected streams play via Cast SDK.
+**Definition of Done:** registered Cast sender applications can launch PhairPlay and play
+DRM-free progressive/HLS/DASH media with synchronized sender transport controls. Fire TV
+continues to report Cast unavailable without packaging Google Play Services.
 
 ---
 
@@ -331,8 +318,8 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 | M3 | AirPlay Handshake + Photo | RTSP session + `/photo` endpoint | 🔄 In Progress | AC-3.x |
 | M4 | AirPlay Video | H.264 mandatory ≥25fps; H.265 optional | 🔄 In Progress | AC-4.x |
 | M5 | AirPlay Audio | A/V sync ≤40ms; ALAC; optional surround | 🔄 In Progress | AC-5.x |
-| M6 | Miracast | H.264 CHP/CBP + LPCM mandatory; HEVC/AAC/AC3 optional | 🔄 Started | AC-6.x |
-| M7 | Cast | H.264+VP8 mandatory; HEVC/VP9/AV1 optional; Widevine | 🔄 Started | AC-7.x |
+| M6 | Miracast | H.264 + mandatory WFD LPCM media path implemented; platform discovery/HDCP validation remains | 🔄 Hardware validation | AC-6.x |
+| M7 | Cast | Cast Connect + Media3 progressive/HLS/DASH player; optional codec/DRM validation remains | 🔄 Hardware validation | AC-7.x |
 | M8 | Stability | 30min tests all protocols; auto-reconnect | ⏳ Pending | AC-8.x |
 | M9 | Fire TV | All protocols on Fire TV; Cast graceful fallback | 🔄 Build-ready | AC-9.x |
 | M10 | i18n | EN+DE complete | 🔄 Partial | AC-10.x |

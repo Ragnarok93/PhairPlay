@@ -28,7 +28,10 @@ import com.phairplay.util.Logger
  *   decoder.decodeNalUnit(nalUnitBytes)                    // call for each video chunk
  *   decoder.release()                                       // call when done
  */
-class VideoDecoder(private val outputSurface: Surface) {
+class VideoDecoder(
+    private val outputSurface: Surface,
+    private val renderTimeNsForPresentationUs: ((Long) -> Long?)? = null
+) {
 
     // The underlying hardware decoder — null until initialize() is called
     private var mediaCodec: MediaCodec? = null
@@ -210,11 +213,17 @@ class VideoDecoder(private val outputSurface: Surface) {
                 // The decoder parsed the real size from the SPS — authoritative for aspect-fit.
                 publishOutputSize(codec.outputFormat)
             } else {
-                // Render immediately. We deliberately do NOT schedule a future render time for A/V sync:
-                // this Surface's BufferQueue holds only ~3 frames, so any hold quickly back-pressures the
-                // decoder → the upstream frame queue saturates → big latency + dropped (corrupt) frames.
-                // A/V alignment is handled by keeping the AUDIO path low-latency instead (AudioStreamServer).
-                codec.releaseOutputBuffer(outputBufferIndex, true)
+                val scheduledNs = renderTimeNsForPresentationUs
+                    ?.invoke(bufferInfo.presentationTimeUs)
+                if (scheduledNs != null && scheduledNs > System.nanoTime()) {
+                    // Miracast supplies MPEG-TS PTS values. Schedule against a
+                    // monotonic presentation clock rather than rendering network
+                    // bursts immediately. AirPlay leaves this callback null and
+                    // retains its existing low-latency immediate-render behavior.
+                    codec.releaseOutputBuffer(outputBufferIndex, scheduledNs)
+                } else {
+                    codec.releaseOutputBuffer(outputBufferIndex, true)
+                }
             }
             outputBufferIndex = codec.dequeueOutputBuffer(bufferInfo, 0)
         }
