@@ -15,12 +15,15 @@ import com.phairplay.util.Logger
  * Instance methods are no-ops because no JVM test exercises the hardware-decode path.
  */
 @Suppress("UNUSED_PARAMETER")
-class VideoDecoder(outputSurface: Any?) {
+class VideoDecoder(
+    outputSurface: Any?,
+    renderTimeNsForPresentationUs: ((Long) -> Long?)? = null
+) {
 
     // Matches the real VideoDecoder API used by MirrorStreamServer (self-heal flag).
     var isHealthy = true
 
-    fun initialize(sps: ByteArray, pps: ByteArray, width: Int, height: Int) {}
+    fun initialize(spsBytes: ByteArray, ppsBytes: ByteArray, width: Int, height: Int) {}
     fun decodeNalUnit(nalUnit: ByteArray, presentationTimeUs: Long = 0L) {}
     fun release() {}
 
