@@ -2,7 +2,6 @@ package com.phairplay.miracast
 
 import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioTrack
 import android.view.Surface
 import com.phairplay.airplay.VideoDecoder
