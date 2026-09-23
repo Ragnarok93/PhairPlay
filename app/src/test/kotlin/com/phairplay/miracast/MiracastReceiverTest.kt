@@ -77,7 +77,7 @@ class MiracastReceiverTest {
 
         every { context.getSystemService(Context.WIFI_P2P_SERVICE) } returns null
 
-        MiracastReceiver(context) { states.add(it) }.start()
+        MiracastReceiver(context = context, sdkInt = 25) { states.add(it) }.start()
 
         assertTrue(states.contains(ProtocolState.DISABLED))
     }
