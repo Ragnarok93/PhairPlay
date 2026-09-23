@@ -72,6 +72,9 @@ class MiracastReceiver(
     @Volatile
     private var isAdvertising = false
 
+    @Volatile
+    private var isListening = false
+
     private val job = SupervisorJob()
     private val scope = CoroutineScope(Dispatchers.IO + job)
     private val rtspServer = WfdRtspServer(
@@ -109,6 +112,7 @@ class MiracastReceiver(
     fun stop() {
         Logger.i("MiracastReceiver stopping")
         try {
+            stopP2pListening()
             stopP2pAdvertisement()
             rtspServer.stop()
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
@@ -246,6 +250,7 @@ class MiracastReceiver(
                     override fun onSuccess() {
                         serviceInfo = localService
                         isAdvertising = true
+                        startP2pListening()
                         rtspServer.start(scope)
                         Logger.i("Miracast WFD P2P service advertised")
                         onStateChanged(ProtocolState.ADVERTISING)
@@ -264,6 +269,69 @@ class MiracastReceiver(
             isAdvertising = false
             Logger.e("Missing Wi-Fi P2P permission while registering Miracast service", e)
             onStateChanged(ProtocolState.ERROR)
+        }
+    }
+
+
+    /**
+     * Keeps the device discoverable to incoming Wi-Fi Direct probes using only
+     * APIs available at the running SDK level.
+     */
+    private fun startP2pListening() {
+        val manager = wifiP2pManager ?: return
+        val activeChannel = channel ?: return
+        val listener = object : WifiP2pManager.ActionListener {
+            override fun onSuccess() {
+                isListening = true
+                Logger.d("Wi-Fi Direct listen/discovery mode active")
+            }
+
+            override fun onFailure(reason: Int) {
+                isListening = false
+                Logger.w("Wi-Fi Direct listen/discovery failed, reason=$reason")
+            }
+        }
+
+        try {
+            when (WifiDirectCompat.listenStrategy(sdkInt)) {
+                WifiDirectCompat.ListenStrategy.EXPLICIT_LISTEN -> {
+                    if (sdkInt >= 33) {
+                        manager.startListening(activeChannel, listener)
+                    }
+                }
+                WifiDirectCompat.ListenStrategy.LEGACY_DISCOVERY ->
+                    manager.discoverPeers(activeChannel, listener)
+            }
+        } catch (e: SecurityException) {
+            isListening = false
+            Logger.e("Missing permission while entering Wi-Fi Direct listen mode", e)
+        }
+    }
+
+    private fun stopP2pListening() {
+        val manager = wifiP2pManager ?: return
+        val activeChannel = channel ?: return
+        if (!isListening) return
+
+        try {
+            val listener = object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    isListening = false
+                }
+
+                override fun onFailure(reason: Int) {
+                    Logger.w("Wi-Fi Direct listen stop failed, reason=$reason")
+                    isListening = false
+                }
+            }
+            if (sdkInt >= 33) {
+                manager.stopListening(activeChannel, listener)
+            } else {
+                manager.stopPeerDiscovery(activeChannel, listener)
+            }
+        } catch (e: SecurityException) {
+            Logger.e("Missing permission while stopping Wi-Fi Direct listen mode", e)
+            isListening = false
         }
     }
 
