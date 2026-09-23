@@ -8,6 +8,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.InetSocketAddress
 import java.net.SocketException
 
 /**
@@ -19,8 +20,9 @@ import java.net.SocketException
 internal class MiracastMediaReceiver(
     private val onSample: (MpegTsDemuxer.ElementarySample) -> Unit
 ) {
-    private val rtpSocket = DatagramSocket(0)
-    private val rtcpSocket = DatagramSocket(0)
+    private val socketPair = allocateSocketPair()
+    private val rtpSocket = socketPair.rtp
+    private val rtcpSocket = socketPair.rtcp
     private val demuxer = MpegTsDemuxer()
     private var receiveJob: Job? = null
     private var rtcpJob: Job? = null
@@ -99,8 +101,48 @@ internal class MiracastMediaReceiver(
     }
 
     companion object {
+        private data class SocketPair(
+            val rtp: DatagramSocket,
+            val rtcp: DatagramSocket
+        )
+
+        private fun allocateSocketPair(): SocketPair {
+            repeat(PORT_PAIR_ALLOCATION_ATTEMPTS) {
+                var rtp: DatagramSocket? = null
+                var rtcp: DatagramSocket? = null
+                try {
+                    rtp = DatagramSocket(null).apply {
+                        reuseAddress = false
+                        bind(InetSocketAddress(0))
+                    }
+                    val rtpPort = rtp.localPort
+                    if ((rtpPort and 1) != 0 || rtpPort >= 65_535) {
+                        rtp.close()
+                        return@repeat
+                    }
+
+                    rtcp = DatagramSocket(null).apply {
+                        reuseAddress = false
+                        bind(InetSocketAddress(rtpPort + 1))
+                    }
+                    return SocketPair(rtp, rtcp)
+                } catch (_: SocketException) {
+                    rtp?.close()
+                    rtcp?.close()
+                } catch (e: SecurityException) {
+                    rtp?.close()
+                    rtcp?.close()
+                    throw e
+                }
+            }
+            throw SocketException(
+                "Unable to allocate consecutive even RTP/RTCP UDP ports"
+            )
+        }
+
         private const val RTP_PAYLOAD_TYPE_MP2T = 33
         private const val MAX_DATAGRAM_BYTES = 65_535
         private const val MAX_RTCP_BYTES = 4_096
+        private const val PORT_PAIR_ALLOCATION_ATTEMPTS = 128
     }
 }
