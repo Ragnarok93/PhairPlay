@@ -63,13 +63,13 @@ Date: 2026-03-23
 | Container | MPEG-TS (MPEG Transport Stream) | **Required** | Standard WFD stream encapsulation |
 | Max Resolution | 1080p @ 60fps | **Required** | Mandatory WFD baseline |
 | Max Resolution (Optional) | 4K UHD @ 60fps | Optional | Only on hardware that supports it |
-| DRM / Copy Protection | HDCP 2.x (hardware-based link protection) | **Required** | Negotiated during WFD setup |
+| DRM / Copy Protection | HDCP 2.x (hardware-based link protection) | Platform capability | Required only for protected WFD content; unprotected Miracast playback must work independently |
 
 ### 1.4 Google Cast Receiver
 
 - FR-19: Run as a Cast Custom Receiver application registered with the Google Cast SDK.
 - FR-20: Accept Cast connections from Chrome/Android/macOS/iOS senders.
-- FR-21: Support Cast screen mirroring from Chrome and Android senders.
+- FR-21: Support Cast Connect media playback launched by compatible Chrome/Android/iOS/macOS sender applications. Generic Chromecast tab/desktop/screen mirroring is an OS-level receiver function and is not claimed by the app-level Cast Connect implementation.
 - FR-22: Display Cast status on the HomeScreen status card.
 - FR-23: Gracefully degrade if the Cast SDK is unavailable (missing Google Play Services on Fire TV).
 
@@ -84,7 +84,7 @@ Date: 2026-03-23
 | Container | MP4, WebM | **Required** | Native Cast containers |
 | Container (Adaptive) | DASH (Dynamic Adaptive Streaming over HTTP), HLS | **Required** | For adaptive bitrate streaming |
 | Max Resolution | Up to 4K UHD @ 60fps (HDR10+) | Optional | 1080p mandatory, 4K hardware-dependent |
-| DRM | Widevine L1 / L3, PlayReady | **Required** | For DRM-protected content streams |
+| DRM | Widevine / platform MediaDrm | Optional integration | Requires sender metadata plus a compatible license flow; DRM-free Cast playback is the mandatory app baseline |
 
 ### 1.5 Service Control
 
@@ -157,7 +157,7 @@ Date: 2026-03-23
 
 ### 2.4 Compatibility
 - NFR-15: Google TV: Android 10+ (API 29+), ARMv8.
-- NFR-16: Fire TV: Android 7.1+ (API 25+), ARMv7/ARMv8.
+- NFR-16: Fire TV: Fire OS 6+ / Android 7.1+ (API 25+), ARMv7/ARMv8. Shared runtime code MUST NOT unconditionally reference APIs newer than API 25; newer Wi-Fi/media APIs MUST be runtime-gated.
 - NFR-17: AirPlay sender (screen mirroring): macOS 12+, iOS/iPadOS 13+.
 - NFR-18: AirPlay sender (audio-only): macOS 12+, iOS/iPadOS 13+.
 - NFR-19: Miracast sender: Windows 10+, Android 4.2+.
@@ -206,7 +206,9 @@ Date: 2026-03-23
 
 > **Note on open codecs:** H.265 HEVC, VP9, and AV1 are fully implementable on Android via `MediaCodec` with hardware support checks. These are planned as optional features in v2 behind `MediaCodecInfo.CodecCapabilities` capability queries at runtime.
 
-> **Note on HDCP and Widevine/PlayReady:** HDCP (for Miracast) is negotiated at the WFD protocol level and enforced by hardware — no software implementation is needed. Widevine and PlayReady (for Cast) are handled by the Google Cast SDK and the Android DRM framework (`MediaDrm`) — the app does not need to implement DRM logic directly.
+> **Note on protected content:** Unprotected Miracast H.264/LPCM playback does not require HDCP. Protected WFD content requires a legitimate HDCP receiver path supplied by the device/platform; PhairPlay does not embed HDCP keys or emulate that secure path in software. Cast DRM likewise is not automatic merely because Cast Connect is present: protected media must provide a compatible DRM/license configuration that the player maps into Android `MediaDrm`. DRM-free Cast media is the mandatory baseline.
+
+> **Note on Android WFD discovery:** API 34 exposes `WifiP2pManager.setWfdInfo()`, but it requires the privileged `CONFIGURE_WIFI_DISPLAY` permission. A normal third-party APK therefore cannot guarantee native Miracast sink advertisement on every Android/Fire TV build. PhairPlay uses public Wi-Fi P2P listen/discovery APIs and DNS-SD where available, and treats OEM/system-app WFD advertisement as an optional privileged integration.
 
 ---
 
@@ -226,5 +228,5 @@ Date: 2026-03-23
 | AirPlay 2 | iOS / iPadOS | 13+ | Screen mirroring + audio-only |
 | Miracast | Windows | 10+ | Screen mirroring |
 | Miracast | Android | 4.2+ | Screen mirroring |
-| Google Cast | Chrome browser | 72+ | Tab/screen cast |
-| Google Cast | Android | 5+ | Screen cast |
+| Google Cast | Chrome browser | 72+ | Cast-enabled media applications |
+| Google Cast | Android / iOS | Supported Cast SDK versions | Cast-enabled media applications |
