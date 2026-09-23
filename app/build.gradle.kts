@@ -227,7 +227,6 @@ dependencies {
     "googletvImplementation"(libs.media3.exoplayer)
     "googletvImplementation"(libs.media3.exoplayer.hls)
     "googletvImplementation"(libs.media3.exoplayer.dash)
-    "googletvImplementation"(libs.media3.session)
     // Cast Connect currently accepts a MediaSessionCompat token. This bridge is
     // Google-TV-only; shared and Fire TV code stay on the API-25-compatible path.
     "googletvImplementation"(libs.androidx.media)
