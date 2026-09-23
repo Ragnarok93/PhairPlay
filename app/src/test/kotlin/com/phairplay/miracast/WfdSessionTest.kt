@@ -71,6 +71,25 @@ class WfdSessionTest {
         assertEquals("12345678", session.sessionId)
     }
 
+
+    @Test
+    fun `SETUP response without Session still advances to PLAY for legacy source`() {
+        val session = WfdSession(rtpPort = 19000)
+        session.applySourceParameters(
+            "wfd_presentation_URL: rtsp://192.168.49.1/wfd1.0/streamid=0 none\r\n"
+        )
+        session.applySourceParameters("wfd_trigger_method: SETUP\r\n")
+
+        assertEquals(
+            WfdSession.Action.SendPlay(
+                presentationUrl = "rtsp://192.168.49.1/wfd1.0/streamid=0",
+                sessionId = null
+            ),
+            session.onSetupResponse(200, emptyMap())
+        )
+        assertEquals(WfdSession.State.PLAY_REQUESTED, session.state)
+    }
+
     @Test
     fun `successful PLAY response enters streaming state`() {
         val session = WfdSession(rtpPort = 19000)
