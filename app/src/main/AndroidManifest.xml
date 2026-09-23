@@ -39,11 +39,12 @@
          uses NEARBY_WIFI_DEVICES and does not require location for this use. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission
-        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:name="android.permission.ACCESS_COARSE_LOCATION"
         android:maxSdkVersion="32" />
     <uses-permission
-        android:name="android.permission.NEARBY_WIFI_DEVICES"
-        android:usesPermissionFlags="neverForLocation" />
+        android:name="android.permission.ACCESS_FINE_LOCATION"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" />
 
     <!-- Start on boot -->
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
