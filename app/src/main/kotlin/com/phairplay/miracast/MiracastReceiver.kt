@@ -53,11 +53,11 @@ import java.net.Socket
  *   receiver.start()  // begins P2P service advertisement
  *   receiver.stop()   // stops advertisement and closes session
  */
-class MiracastReceiver(
+internal class MiracastReceiver(
     private val context: Context,
-    private val onStateChanged: (ProtocolState) -> Unit,
+    private val sdkInt: Int = Build.VERSION.SDK_INT,
     private val onMediaSample: (MpegTsDemuxer.ElementarySample) -> Unit = {},
-    private val sdkInt: Int = Build.VERSION.SDK_INT
+    private val onStateChanged: (ProtocolState) -> Unit
 ) {
 
     // Android's Wi-Fi P2P manager — the entry point for all Wi-Fi Direct operations
