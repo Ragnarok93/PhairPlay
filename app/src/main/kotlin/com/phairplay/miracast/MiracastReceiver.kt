@@ -54,7 +54,8 @@ import java.net.Socket
  */
 class MiracastReceiver(
     private val context: Context,
-    private val onStateChanged: (ProtocolState) -> Unit
+    private val onStateChanged: (ProtocolState) -> Unit,
+    private val sdkInt: Int = Build.VERSION.SDK_INT
 ) {
 
     // Android's Wi-Fi P2P manager — the entry point for all Wi-Fi Direct operations
@@ -137,10 +138,10 @@ class MiracastReceiver(
             onStateChanged(ProtocolState.DISABLED)
             return
         }
-        if (!WifiDirectCompat.hasRequiredPermission(context)) {
+        if (!WifiDirectCompat.hasRequiredPermission(context, sdkInt)) {
             Logger.w(
-                "Missing Wi-Fi Direct runtime permission for API ${Build.VERSION.SDK_INT}: " +
-                    WifiDirectCompat.requiredRuntimePermissions().joinToString()
+                "Missing Wi-Fi Direct runtime permission for API $sdkInt: " +
+                    WifiDirectCompat.requiredRuntimePermissions(sdkInt).joinToString()
             )
             onStateChanged(ProtocolState.ERROR)
             return
@@ -216,7 +217,7 @@ class MiracastReceiver(
             onStateChanged(ProtocolState.ERROR)
             return
         }
-        if (!WifiDirectCompat.hasRequiredPermission(context)) {
+        if (!WifiDirectCompat.hasRequiredPermission(context, sdkInt)) {
             Logger.w("Cannot register Miracast P2P service: missing Wi-Fi Direct permission")
             onStateChanged(ProtocolState.ERROR)
             return
