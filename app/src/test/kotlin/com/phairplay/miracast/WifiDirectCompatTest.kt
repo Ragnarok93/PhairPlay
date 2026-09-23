@@ -6,10 +6,13 @@ import org.junit.Test
 class WifiDirectCompatTest {
 
     @Test
-    fun `API 25 through 32 require fine location for Wi-Fi Direct operations`() {
+    fun `API 25 through 32 request coarse and fine location together`() {
         for (api in 25..32) {
             assertEquals(
-                setOf("android.permission.ACCESS_FINE_LOCATION"),
+                setOf(
+                    "android.permission.ACCESS_COARSE_LOCATION",
+                    "android.permission.ACCESS_FINE_LOCATION"
+                ),
                 WifiDirectCompat.requiredRuntimePermissions(api)
             )
         }
