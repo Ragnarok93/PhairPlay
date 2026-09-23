@@ -1,5 +1,6 @@
 package com.phairplay.miracast
 
+import android.annotation.SuppressLint
 import android.content.Context
 import android.net.wifi.p2p.WifiP2pManager
 import android.net.wifi.p2p.WifiP2pManager.Channel
@@ -277,6 +278,7 @@ class MiracastReceiver(
      * Keeps the device discoverable to incoming Wi-Fi Direct probes using only
      * APIs available at the running SDK level.
      */
+    @SuppressLint("NewApi", "MissingPermission")
     private fun startP2pListening() {
         val manager = wifiP2pManager ?: return
         val activeChannel = channel ?: return
@@ -308,6 +310,7 @@ class MiracastReceiver(
         }
     }
 
+    @SuppressLint("NewApi", "MissingPermission")
     private fun stopP2pListening() {
         val manager = wifiP2pManager ?: return
         val activeChannel = channel ?: return
