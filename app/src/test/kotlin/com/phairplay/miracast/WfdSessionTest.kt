@@ -117,4 +117,61 @@ class WfdSessionTest {
         assertEquals(WfdSession.Action.StreamStarted, session.onPlayResponse(200))
         assertEquals(WfdSession.State.STREAMING, session.state)
     }
+
+    @Test
+    fun `PAUSE trigger asks sink to send RTSP PAUSE and waits for response`() {
+        val session = streamingSession()
+
+        assertEquals(
+            WfdSession.Action.SendPause(
+                presentationUrl = "rtsp://192.168.49.1/wfd1.0/streamid=0",
+                sessionId = "12345678"
+            ),
+            session.applySourceParameters("wfd_trigger_method: PAUSE\r\n")
+        )
+        assertEquals(WfdSession.State.PAUSE_REQUESTED, session.state)
+
+        assertEquals(WfdSession.Action.StreamPaused, session.onPauseResponse(200))
+        assertEquals(WfdSession.State.PAUSED, session.state)
+    }
+
+    @Test
+    fun `TEARDOWN trigger asks sink to send RTSP TEARDOWN before closing`() {
+        val session = streamingSession()
+
+        assertEquals(
+            WfdSession.Action.SendTeardown(
+                presentationUrl = "rtsp://192.168.49.1/wfd1.0/streamid=0",
+                sessionId = "12345678"
+            ),
+            session.applySourceParameters("wfd_trigger_method: TEARDOWN\r\n")
+        )
+        assertEquals(WfdSession.State.TEARDOWN_REQUESTED, session.state)
+
+        assertEquals(WfdSession.Action.SessionClosed, session.onTeardownResponse(200))
+        assertEquals(WfdSession.State.CLOSED, session.state)
+    }
+
+    @Test
+    fun `failed PAUSE keeps streaming and failed TEARDOWN keeps prior state`() {
+        val pauseSession = streamingSession()
+        pauseSession.applySourceParameters("wfd_trigger_method: PAUSE\r\n")
+        assertTrue(pauseSession.onPauseResponse(500) is WfdSession.Action.ProtocolError)
+        assertEquals(WfdSession.State.STREAMING, pauseSession.state)
+
+        val teardownSession = streamingSession()
+        teardownSession.applySourceParameters("wfd_trigger_method: TEARDOWN\r\n")
+        assertTrue(teardownSession.onTeardownResponse(500) is WfdSession.Action.ProtocolError)
+        assertEquals(WfdSession.State.STREAMING, teardownSession.state)
+    }
+
+    private fun streamingSession(): WfdSession =
+        WfdSession(rtpPort = 19000).also { session ->
+            session.applySourceParameters(
+                "wfd_presentation_URL: rtsp://192.168.49.1/wfd1.0/streamid=0 none\r\n"
+            )
+            session.applySourceParameters("wfd_trigger_method: SETUP\r\n")
+            session.onSetupResponse(200, mapOf("Session" to "12345678"))
+            session.onPlayResponse(200)
+        }
 }
