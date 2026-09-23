@@ -49,7 +49,11 @@ class MiracastReceiverTest {
             Unit
         }
 
-        MiracastReceiver(context) { states.add(it) }.start()
+        MiracastReceiver(
+            context = context,
+            onStateChanged = { states.add(it) },
+            sdkInt = 35
+        ).start()
 
         verify(exactly = 1) {
             manager.addLocalService(eq(channel), any<WifiP2pDnsSdServiceInfo>(), any())
