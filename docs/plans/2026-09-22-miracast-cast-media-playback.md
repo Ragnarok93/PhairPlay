@@ -52,7 +52,7 @@
 
 - [x] Parse M3/M4 WFD parameters and `wfd_trigger_method`.
 - [x] Allocate non-zero media ports before advertising `wfd_client_rtp_ports`.
-- [x] Model OPTIONS → capability exchange → SETUP trigger → sink-originated SETUP/PLAY → streaming → teardown.
+- [x] Model OPTIONS → capability exchange → sink-originated SETUP/PLAY/PAUSE/TEARDOWN transactions → streaming/paused/closed states.
 - [x] Reject malformed transitions deterministically and preserve CSeq/session handling.
 
 ### Task 3: Miracast RTP/MPEG-TS media ingress
