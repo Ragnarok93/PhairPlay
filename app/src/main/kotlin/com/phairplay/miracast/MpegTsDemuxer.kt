@@ -240,6 +240,7 @@ internal class MpegTsDemuxer {
         const val STREAM_TYPE_H264 = 0x1B
         const val STREAM_TYPE_AAC = 0x0F
         const val STREAM_TYPE_AAC_LATM = 0x11
+        const val STREAM_TYPE_WFD_LPCM = 0x83
 
         private const val TS_PACKET_SIZE = 188
         private const val SYNC_BYTE = 0x47
