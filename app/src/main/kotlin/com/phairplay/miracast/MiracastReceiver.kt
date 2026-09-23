@@ -587,7 +587,7 @@ internal class WfdRtspServer(
                 output = output,
                 method = "PLAY",
                 uri = action.presentationUrl,
-                headers = mapOf("Session" to action.sessionId)
+                headers = action.sessionId?.let { mapOf("Session" to it) } ?: emptyMap()
             )
             WfdSession.Action.StreamStarted -> markSessionStarted()
             WfdSession.Action.StreamPaused -> Unit
