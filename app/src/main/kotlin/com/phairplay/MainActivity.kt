@@ -67,6 +67,8 @@ class MainActivity : AppCompatActivity() {
     private var service: PhairPlayService? = null
     private var isBound = false
     private var currentAirPlayState = ProtocolState.DISABLED
+    private var currentMiracastState = ProtocolState.DISABLED
+    private var currentCastState = ProtocolState.DISABLED
     private var currentPhotoFrame: PhotoFrame? = null
     private var currentNowPlaying: NowPlayingInfo? = null
     private var currentPin: String? = null
@@ -77,8 +79,9 @@ class MainActivity : AppCompatActivity() {
             isBound = true
             Timber.d("MainActivity: bound to PhairPlayService")
 
-            // Wire the streaming Surface so the service can pass it to VideoDecoder
+            // Wire the streaming Surface so all video receiver paths can use it.
             service?.setVideoSurfaceProvider { getVideoSurface() }
+            service?.handleCastIntent(intent)
 
             // Show/hide the full-screen overlay for video streams and photos.
             observeOverlayState()
@@ -113,6 +116,12 @@ class MainActivity : AppCompatActivity() {
 
         // Android 13+ requires an explicit runtime grant for POST_NOTIFICATIONS
         requestNotificationPermission()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        service?.handleCastIntent(intent)
     }
 
     override fun onStart() {
@@ -352,6 +361,18 @@ class MainActivity : AppCompatActivity() {
             }
         }
         lifecycleScope.launch {
+            svc.miracastState.collectLatest { state ->
+                currentMiracastState = state
+                updateOverlay()
+            }
+        }
+        lifecycleScope.launch {
+            svc.castState.collectLatest { state ->
+                currentCastState = state
+                updateOverlay()
+            }
+        }
+        lifecycleScope.launch {
             svc.photoFrame.collectLatest { frame ->
                 currentPhotoFrame = frame
                 updateOverlay()
@@ -381,7 +402,9 @@ class MainActivity : AppCompatActivity() {
             // Audio-only AirPlay (system audio, Music, podcasts): show the now-playing card instead
             // of the black video surface. Set whenever audio plays without video.
             nowPlaying != null -> showNowPlayingScreen(nowPlaying)
-            currentAirPlayState == ProtocolState.CONNECTED -> showStreamingScreen()
+            currentAirPlayState == ProtocolState.CONNECTED ||
+                currentMiracastState == ProtocolState.CONNECTED ||
+                currentCastState == ProtocolState.CONNECTED -> showStreamingScreen()
             photoFrame != null -> showPhotoScreen(photoFrame)
             else -> hideStreamingScreen()
         }
