@@ -251,6 +251,7 @@ internal class MiracastReceiver(
                     // group owner. Keep the inbound RTSP listener as a
                     // compatibility fallback instead of using hidden APIs.
                     lastOutboundEndpoint = null
+                    rtspServer.disconnectActiveSession()
                     Logger.d(
                         "Miracast sink is P2P group owner; retaining inbound RTSP fallback"
                     )
@@ -362,6 +363,9 @@ internal class MiracastReceiver(
                         isAdvertising = true
                         startP2pListening()
                         rtspServer.start(scope)
+                        // Re-resolve after RTSP becomes active so a receiver
+                        // restart can reconnect to an already-formed P2P group.
+                        refreshP2pControlConnection()
                         Logger.i("Miracast WFD P2P service advertised")
                         onStateChanged(ProtocolState.ADVERTISING)
                     }
