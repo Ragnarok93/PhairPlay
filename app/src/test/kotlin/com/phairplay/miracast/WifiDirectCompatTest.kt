@@ -29,4 +29,24 @@ class WifiDirectCompatTest {
     fun `API below supported Fire TV floor reports no runtime permission contract`() {
         assertEquals(emptySet<String>(), WifiDirectCompat.requiredRuntimePermissions(24))
     }
+
+    @Test
+    fun `API 25 through 32 use legacy discovery and API 33 plus explicit listen`() {
+        assertEquals(
+            WifiDirectCompat.ListenStrategy.LEGACY_DISCOVERY,
+            WifiDirectCompat.listenStrategy(25)
+        )
+        assertEquals(
+            WifiDirectCompat.ListenStrategy.LEGACY_DISCOVERY,
+            WifiDirectCompat.listenStrategy(32)
+        )
+        assertEquals(
+            WifiDirectCompat.ListenStrategy.EXPLICIT_LISTEN,
+            WifiDirectCompat.listenStrategy(33)
+        )
+        assertEquals(
+            WifiDirectCompat.ListenStrategy.EXPLICIT_LISTEN,
+            WifiDirectCompat.listenStrategy(35)
+        )
+    }
 }
