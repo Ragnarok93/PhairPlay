@@ -188,8 +188,9 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [x] API-aware Wi-Fi Direct capability/permission layer (API 25–35)
 - [x] DNS-SD WFD service advertisement and API-specific P2P listen/discovery mode
 - [x] WFD RTSP session model with requested-field capability exchange
+- [x] Standards-oriented sink→source RTSP control connection after Wi-Fi Direct group formation, with inbound port-7236 compatibility fallback
 - [x] Sink-originated M6 SETUP / M7 PLAY after `wfd_trigger_method: SETUP`
-- [x] Real non-zero RTP/RTCP UDP port allocation
+- [x] Adjacent even/odd RTP/RTCP UDP allocation; M3 advertises the primary RTP port without falsely claiming a second RTP port
 - [x] RTP v2 parsing with sequence-loss diagnostics
 - [x] MPEG-TS PAT/PMT/PES demux with PTS extraction and continuity recovery
 
@@ -198,6 +199,7 @@ Phase 0 → Phase 1 → Phase 2 → Phase 3 → Phase 4 → Phase 5 → Phase 6 
 - [x] MPEG-TS PTS-driven video scheduling while preserving AirPlay's existing render policy
 - [x] WFD LPCM stream type `0x83`: 48 kHz / 16-bit / stereo to `AudioTrack`
 - [x] Shared TV Surface lifecycle integration and Miracast streaming overlay state
+- [x] Protocol-neutral playback ownership so AirPlay, Miracast, and Cast cannot simultaneously own the Surface/audio path
 
 **Remaining interoperability work:**
 - [ ] Real-device Windows 10/11 and Android/Samsung WFD validation
@@ -232,8 +234,9 @@ Protected-content/HDCP support is a separate platform capability.
 - [x] `MediaSessionCompat` play/pause/seek/stop bridge and status propagation
 - [x] MP4/WebM/progressive playback through Media3
 - [x] HLS and DASH playback modules
-- [x] Shared TV Surface integration
+- [x] Shared TV Surface integration with idle/end/error Surface release
 - [x] Fire TV no-GMS compatibility implementation remains dependency-free and API-25-safe
+- [x] CI guard rejects Google Play Services / Media3 dependencies from the Fire TV runtime classpath
 
 **Remaining integration/validation work:**
 - [ ] Register/associate the production Cast application ID in Google Cast Developer Console
