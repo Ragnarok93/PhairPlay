@@ -29,7 +29,9 @@ internal class WfdSession(
         SETUP_REQUESTED,
         PLAY_REQUESTED,
         STREAMING,
+        PAUSE_REQUESTED,
         PAUSED,
+        TEARDOWN_REQUESTED,
         CLOSED
     }
 
@@ -37,6 +39,8 @@ internal class WfdSession(
         object None : Action()
         data class SendSetup(val presentationUrl: String) : Action()
         data class SendPlay(val presentationUrl: String, val sessionId: String?) : Action()
+        data class SendPause(val presentationUrl: String, val sessionId: String?) : Action()
+        data class SendTeardown(val presentationUrl: String, val sessionId: String?) : Action()
         object StreamStarted : Action()
         object StreamPaused : Action()
         object SessionClosed : Action()
@@ -51,6 +55,8 @@ internal class WfdSession(
 
     var sessionId: String? = null
         private set
+
+    private var stateBeforeTeardown: State? = null
 
     /**
      * Returns only parameters explicitly requested by M3 GET_PARAMETER. A blank
@@ -121,16 +127,25 @@ internal class WfdSession(
                 Action.SendPlay(url, sessionId)
             }
             "PAUSE" -> {
+                val url = presentationUrl
+                    ?: return Action.ProtocolError(400, "Missing wfd_presentation_URL")
                 if (state != State.STREAMING) {
                     Action.ProtocolError(455, "PAUSE before streaming")
                 } else {
-                    state = State.PAUSED
-                    Action.StreamPaused
+                    state = State.PAUSE_REQUESTED
+                    Action.SendPause(url, sessionId)
                 }
             }
             "TEARDOWN" -> {
-                state = State.CLOSED
-                Action.SessionClosed
+                val url = presentationUrl
+                    ?: return Action.ProtocolError(400, "Missing wfd_presentation_URL")
+                if (state != State.STREAMING && state != State.PAUSED) {
+                    Action.ProtocolError(455, "TEARDOWN invalid in state $state")
+                } else {
+                    stateBeforeTeardown = state
+                    state = State.TEARDOWN_REQUESTED
+                    Action.SendTeardown(url, sessionId)
+                }
             }
             else -> Action.ProtocolError(400, "Unsupported WFD trigger: $trigger")
         }
@@ -172,7 +187,36 @@ internal class WfdSession(
         return Action.StreamStarted
     }
 
+    fun onPauseResponse(statusCode: Int): Action {
+        if (state != State.PAUSE_REQUESTED) {
+            return Action.ProtocolError(455, "Unexpected PAUSE response in state $state")
+        }
+        if (statusCode !in 200..299) {
+            state = State.STREAMING
+            return Action.ProtocolError(statusCode, "Source rejected PAUSE")
+        }
+
+        state = State.PAUSED
+        return Action.StreamPaused
+    }
+
+    fun onTeardownResponse(statusCode: Int): Action {
+        if (state != State.TEARDOWN_REQUESTED) {
+            return Action.ProtocolError(455, "Unexpected TEARDOWN response in state $state")
+        }
+        if (statusCode !in 200..299) {
+            state = stateBeforeTeardown ?: State.STREAMING
+            stateBeforeTeardown = null
+            return Action.ProtocolError(statusCode, "Source rejected TEARDOWN")
+        }
+
+        stateBeforeTeardown = null
+        state = State.CLOSED
+        return Action.SessionClosed
+    }
+
     fun close(): Action {
+        stateBeforeTeardown = null
         state = State.CLOSED
         return Action.SessionClosed
     }
