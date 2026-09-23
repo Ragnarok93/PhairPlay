@@ -71,7 +71,9 @@ internal class WfdSession(
         return entries.joinToString(separator = "\r\n", postfix = "\r\n") {
             (name, value) ->
             val resolved = if (name == "wfd_client_rtp_ports") {
-                "RTP/AVP/UDP;unicast $rtpPort $rtcpPort mode=play"
+                // WFD M3 port1 is reserved/secondary RTP and AOSP sources reject
+                // non-zero values here. RTCP, when negotiated, belongs to SETUP.
+                "RTP/AVP/UDP;unicast $rtpPort 0 mode=play"
             } else {
                 value
             }
@@ -200,7 +202,7 @@ internal class WfdSession(
             "wfd_display_edid" to "none",
             "wfd_coupled_sink" to "none",
             "wfd_connector_type" to "05",
-            "wfd_idr_request_capability" to "1"
+            "wfd_idr_request_capability" to "0"
         )
     }
 }
