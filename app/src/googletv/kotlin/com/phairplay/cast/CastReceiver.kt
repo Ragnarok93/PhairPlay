@@ -1,25 +1,33 @@
 package com.phairplay.cast
 
 import android.content.Context
+import android.content.Intent
+import android.os.Looper
+import android.view.Surface
 import com.google.android.gms.cast.tv.CastReceiverContext
 import com.phairplay.BuildConfig
 import com.phairplay.service.ProtocolState
 import com.phairplay.util.Logger
 
 /**
- * Google TV Cast Connect receiver lifecycle.
+ * Google TV Cast Connect receiver lifecycle and Media3 playback owner.
  *
- * This class starts the official Cast Android TV receiver SDK. Cast Connect
- * still requires a registered Cast Application ID and sender-side Cast support,
- * and this is the real SDK entry point.
+ * This source set is compiled only for the Google TV flavor. Fire TV uses its
+ * own no-GMS implementation, preserving the API-25 / Fire OS 6 floor.
  */
 class CastReceiver(
     private val context: Context,
+    private val surfaceProvider: () -> Surface? = { null },
     private val onStateChanged: (ProtocolState) -> Unit
 ) {
     private var started = false
+    private var mediaController: CastMediaController? = null
 
     fun start() {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "CastReceiver.start() must run on the main looper"
+        }
+
         if (!isConfigured()) {
             Logger.w("Google Cast is not configured: missing Cast application ID")
             onStateChanged(ProtocolState.ERROR)
@@ -35,18 +43,43 @@ class CastReceiver(
         try {
             CastReceiverContext.initInstance(context.applicationContext)
             val receiverContext = CastReceiverContext.getInstance()
+            mediaController = CastMediaController(
+                context = context,
+                mediaManager = receiverContext.mediaManager,
+                surfaceProvider = surfaceProvider,
+                onPlaybackActive = { active ->
+                    onStateChanged(
+                        if (active) ProtocolState.CONNECTED else ProtocolState.ADVERTISING
+                    )
+                }
+            )
             receiverContext.start()
             started = true
-            Logger.i("Cast Connect receiver started")
+            Logger.i("Cast Connect receiver + Media3 playback started")
             onStateChanged(ProtocolState.ADVERTISING)
         } catch (e: Exception) {
             Logger.e("Failed to start Cast Connect receiver", e)
+            mediaController?.release()
+            mediaController = null
+            started = false
             onStateChanged(ProtocolState.ERROR)
         }
     }
 
+    fun handleIntent(intent: Intent): Boolean =
+        mediaController?.handleIntent(intent) ?: false
+
+    fun updateVideoSurface(surface: Surface?) {
+        mediaController?.updateSurface(surface)
+    }
+
     fun stop() {
+        check(Looper.myLooper() == Looper.getMainLooper()) {
+            "CastReceiver.stop() must run on the main looper"
+        }
         try {
+            mediaController?.release()
+            mediaController = null
             if (started) {
                 CastReceiverContext.getInstance().stop()
                 Logger.i("Cast Connect receiver stopped")
