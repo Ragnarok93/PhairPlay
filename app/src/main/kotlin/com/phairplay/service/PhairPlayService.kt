@@ -408,6 +408,9 @@ class PhairPlayService : Service() {
                 Logger.w(
                     "Rejecting $protocol playback while shared playback is owned by $owner"
                 )
+                synchronized(playbackLock) {
+                    suppressedProtocols += protocol
+                }
                 serviceScope.launch { suppressConflictingProtocol(protocol) }
                 return
             }
@@ -438,10 +441,6 @@ class PhairPlayService : Service() {
     }
 
     private suspend fun suppressConflictingProtocol(protocol: Protocol) {
-        synchronized(playbackLock) {
-            suppressedProtocols += protocol
-        }
-
         when (protocol) {
             Protocol.AIRPLAY -> {
                 val receiver = airPlayReceiver
@@ -478,25 +477,45 @@ class PhairPlayService : Service() {
                 }
             }
         }
+
+        // The owner may have ended while this shutdown was in flight. Re-run
+        // restoration after the losing receiver is definitely detached so it
+        // cannot be stranded by that race.
+        if (playbackRestoreEnabled && playbackCoordinator.owner == null) {
+            restoreSuppressedProtocols()
+        }
     }
 
     private suspend fun restoreSuppressedProtocols() {
         if (!playbackRestoreEnabled || playbackCoordinator.owner != null) return
 
         val pending = synchronized(playbackLock) {
-            suppressedProtocols.toSet().also { suppressedProtocols.clear() }
+            suppressedProtocols.toSet()
         }
         if (pending.isEmpty()) return
 
         val settings = settingsRepository.settingsFlow.first()
-        if (Protocol.AIRPLAY in pending && settings.airPlayEnabled) {
-            startAirPlay(settings)
+
+        suspend fun markRestored(protocol: Protocol) {
+            synchronized(playbackLock) {
+                suppressedProtocols.remove(protocol)
+            }
         }
-        if (Protocol.MIRACAST in pending && settings.miracastEnabled) {
-            startMiracast()
+
+        if (Protocol.AIRPLAY in pending && airPlayReceiver == null) {
+            if (settings.airPlayEnabled) startAirPlay(settings)
+            markRestored(Protocol.AIRPLAY)
         }
-        if (Protocol.CAST in pending && settings.castEnabled) {
-            startCast()
+        if (Protocol.MIRACAST in pending &&
+            miracastReceiver == null &&
+            miracastPlayback == null
+        ) {
+            if (settings.miracastEnabled) startMiracast()
+            markRestored(Protocol.MIRACAST)
+        }
+        if (Protocol.CAST in pending && castReceiver == null) {
+            if (settings.castEnabled) startCast()
+            markRestored(Protocol.CAST)
         }
     }
 
