@@ -273,7 +273,8 @@ class MiracastReceiver(
 
 internal class WfdRtspServer(
     private val onSessionStarted: () -> Unit,
-    private val onSessionStopped: () -> Unit
+    private val onSessionStopped: () -> Unit,
+    private val onMediaSample: (MpegTsDemuxer.ElementarySample) -> Unit = {}
 ) {
     private val requestReader = RtspRequestReader(
         maxMessageBytes = MAX_MESSAGE_BYTES,
@@ -283,8 +284,18 @@ internal class WfdRtspServer(
     @Volatile private var running = false
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var activeClient: Socket? = null
+
+    // A deterministic non-zero session is available to direct unit tests of routeRequest().
+    // A real client connection replaces it with ports allocated by MiracastMediaReceiver.
+    private var wfdSession: WfdSession = WfdSession(TEST_RTP_PORT)
+    private var mediaReceiver: MiracastMediaReceiver? = null
+
     private var currentCSeq = 0
+    private var outboundCSeq = 1
     private var sessionStarted = false
+    private var sentSinkOptions = false
+    private val pendingOutboundMethods = mutableMapOf<Int, String>()
+    private var deferredAction: WfdSession.Action = WfdSession.Action.None
 
     fun start(scope: CoroutineScope) {
         if (running) return
@@ -302,8 +313,11 @@ internal class WfdRtspServer(
         } catch (e: Exception) {
             Logger.e("Error closing WFD RTSP sockets (non-fatal)", e)
         }
+        mediaReceiver?.stop()
+        mediaReceiver = null
         activeClient = null
         serverSocket = null
+        pendingOutboundMethods.clear()
         if (sessionStarted) {
             sessionStarted = false
             onSessionStopped()
@@ -322,33 +336,75 @@ internal class WfdRtspServer(
                     continue
                 }
                 activeClient = client
-                handleClient(client)
+                handleClient(client, scope)
             }
         } catch (e: Exception) {
             if (running) Logger.e("WFD RTSP server error", e)
         }
     }
 
-    private fun handleClient(socket: Socket) {
+    private fun handleClient(socket: Socket, scope: CoroutineScope) {
+        val media = try {
+            MiracastMediaReceiver(onMediaSample).also { it.start(scope) }
+        } catch (e: Exception) {
+            Logger.e("Unable to allocate Miracast RTP/RTCP sockets", e)
+            try { socket.close() } catch (_: Exception) {}
+            return
+        }
+
+        mediaReceiver = media
+        wfdSession = WfdSession(media.rtpPort, media.rtcpPort)
+        outboundCSeq = 1
+        pendingOutboundMethods.clear()
+        sentSinkOptions = false
+
         try {
             val input = socket.getInputStream()
             val output = socket.getOutputStream()
             while (running && !socket.isClosed) {
-                val request = requestReader.read(input) ?: break
-                currentCSeq = request.headers["CSeq"]?.toIntOrNull() ?: 0
-                val response = routeRequest(request)
+                val message = requestReader.read(input) ?: break
+
+                // RtspRequestReader is deliberately shared with AirPlay. For a response line
+                // ("RTSP/1.0 200 OK") it yields method=RTSP/1.0 and uri=200, which is enough
+                // to dispatch our outstanding sink-originated M2/M6/M7 transactions.
+                if (message.method.startsWith("RTSP/", ignoreCase = true)) {
+                    handleSourceResponse(message, output)
+                    continue
+                }
+
+                currentCSeq = header(message.headers, "CSeq")?.toIntOrNull() ?: 0
+                val response = routeRequest(message)
                 sendResponse(output, response)
-                if (request.method == "TEARDOWN") break
+
+                if (message.method == "OPTIONS" && !sentSinkOptions) {
+                    sentSinkOptions = true
+                    sendRequest(
+                        output = output,
+                        method = "OPTIONS",
+                        uri = "*",
+                        headers = mapOf("Require" to "org.wfa.wfd1.0")
+                    )
+                }
+
+                val action = deferredAction
+                deferredAction = WfdSession.Action.None
+                performAction(action, output)
+
+                if (message.method == "TEARDOWN") break
             }
         } catch (e: Exception) {
             if (running) Logger.e("Error handling WFD RTSP client", e)
         } finally {
+            media.stop()
+            if (mediaReceiver === media) mediaReceiver = null
             try {
                 socket.close()
             } catch (e: Exception) {
                 Logger.e("Error closing WFD RTSP client socket (non-fatal)", e)
             }
             activeClient = null
+            pendingOutboundMethods.clear()
+            wfdSession.close()
             if (sessionStarted) {
                 sessionStarted = false
                 onSessionStopped()
@@ -362,73 +418,168 @@ internal class WfdRtspServer(
             "OPTIONS" -> RtspResponse(
                 statusCode = 200,
                 statusMessage = "OK",
-                headers = mapOf("Public" to "org.wfa.wfd1.0, GET_PARAMETER, SET_PARAMETER")
+                headers = mapOf(
+                    "Public" to "org.wfa.wfd1.0, GET_PARAMETER, SET_PARAMETER"
+                )
             )
+
             "GET_PARAMETER" -> RtspResponse(
                 statusCode = 200,
                 statusMessage = "OK",
                 headers = mapOf("Content-Type" to "text/parameters"),
-                body = sinkParameters()
+                body = wfdSession.capabilityResponse(request.body)
             )
-            "SET_PARAMETER" -> RtspResponse(statusCode = 200, statusMessage = "OK")
+
+            "SET_PARAMETER" -> {
+                when (val action = wfdSession.applySourceParameters(request.body)) {
+                    is WfdSession.Action.ProtocolError -> RtspResponse(
+                        statusCode = action.statusCode,
+                        statusMessage = action.message
+                    )
+                    else -> {
+                        deferredAction = action
+                        RtspResponse(statusCode = 200, statusMessage = "OK")
+                    }
+                }
+            }
+
+            // Compatibility fallback for senders that initiate M6/M7 themselves.
             "SETUP" -> RtspResponse(
                 statusCode = 200,
                 statusMessage = "OK",
                 headers = mapOf(
-                    "Session" to WFD_SESSION_ID,
-                    "Transport" to "RTP/AVP/TCP;unicast;interleaved=0-1"
+                    "Session" to FALLBACK_SESSION_ID,
+                    "Transport" to wfdSession.setupTransportHeader()
                 )
             )
+
             "PLAY" -> {
-                if (!sessionStarted) {
-                    sessionStarted = true
-                    onSessionStarted()
-                }
+                markSessionStarted()
                 RtspResponse(
                     statusCode = 200,
                     statusMessage = "OK",
-                    headers = mapOf("Session" to WFD_SESSION_ID)
+                    headers = mapOf("Session" to (wfdSession.sessionId ?: FALLBACK_SESSION_ID))
                 )
             }
+
             "PAUSE" -> RtspResponse(
                 statusCode = 200,
                 statusMessage = "OK",
-                headers = mapOf("Session" to WFD_SESSION_ID)
+                headers = mapOf("Session" to (wfdSession.sessionId ?: FALLBACK_SESSION_ID))
             )
-            "TEARDOWN" -> RtspResponse(
-                statusCode = 200,
-                statusMessage = "OK",
-                headers = mapOf("Session" to WFD_SESSION_ID)
-            )
+
+            "TEARDOWN" -> {
+                deferredAction = wfdSession.close()
+                RtspResponse(
+                    statusCode = 200,
+                    statusMessage = "OK",
+                    headers = mapOf("Session" to (wfdSession.sessionId ?: FALLBACK_SESSION_ID))
+                )
+            }
+
             else -> RtspResponse(statusCode = 501, statusMessage = "Not Implemented")
         }
     }
 
-    private fun sinkParameters(): String =
-        listOf(
-            "wfd_audio_codecs: LPCM 00000003 00",
-            "wfd_video_formats: 00 00 02 10 0001FFFF 00000000 00000000 00 0000 0000 00 none none",
-            "wfd_client_rtp_ports: RTP/AVP/TCP;unicast 0 0 mode=play",
-            "wfd_content_protection: none",
-            "wfd_display_edid: none",
-            "wfd_coupled_sink: none",
-            "wfd_connector_type: 05"
-        ).joinToString(separator = "\r\n", postfix = "\r\n")
+    private fun handleSourceResponse(response: RtspRequest, output: OutputStream) {
+        val statusCode = response.uri.toIntOrNull() ?: run {
+            Logger.w("Malformed WFD RTSP response status: ${response.uri}")
+            return
+        }
+        val cSeq = header(response.headers, "CSeq")?.toIntOrNull() ?: return
+        val method = pendingOutboundMethods.remove(cSeq) ?: run {
+            Logger.w("Unexpected WFD RTSP response CSeq=$cSeq")
+            return
+        }
+
+        val action = when (method) {
+            "SETUP" -> wfdSession.onSetupResponse(statusCode, response.headers)
+            "PLAY" -> wfdSession.onPlayResponse(statusCode)
+            else -> WfdSession.Action.None
+        }
+        performAction(action, output)
+    }
+
+    private fun performAction(action: WfdSession.Action, output: OutputStream) {
+        when (action) {
+            WfdSession.Action.None -> Unit
+            is WfdSession.Action.SendSetup -> sendRequest(
+                output = output,
+                method = "SETUP",
+                uri = action.presentationUrl,
+                headers = mapOf("Transport" to wfdSession.setupTransportHeader())
+            )
+            is WfdSession.Action.SendPlay -> sendRequest(
+                output = output,
+                method = "PLAY",
+                uri = action.presentationUrl,
+                headers = mapOf("Session" to action.sessionId)
+            )
+            WfdSession.Action.StreamStarted -> markSessionStarted()
+            WfdSession.Action.StreamPaused -> Unit
+            WfdSession.Action.SessionClosed -> {
+                if (sessionStarted) {
+                    sessionStarted = false
+                    onSessionStopped()
+                }
+            }
+            is WfdSession.Action.ProtocolError ->
+                Logger.w("WFD state error ${action.statusCode}: ${action.message}")
+        }
+    }
+
+    private fun markSessionStarted() {
+        if (!sessionStarted) {
+            sessionStarted = true
+            onSessionStarted()
+        }
+    }
+
+    private fun sendRequest(
+        output: OutputStream,
+        method: String,
+        uri: String,
+        headers: Map<String, String> = emptyMap(),
+        body: String = ""
+    ) {
+        val cSeq = outboundCSeq++
+        pendingOutboundMethods[cSeq] = method
+
+        val bytes = body.toByteArray(Charsets.UTF_8)
+        val sb = StringBuilder()
+        sb.append("$method $uri RTSP/1.0\r\n")
+        sb.append("CSeq: $cSeq\r\n")
+        sb.append("User-Agent: PhairPlay/1.0\r\n")
+        headers.forEach { (key, value) -> sb.append("$key: $value\r\n") }
+        if (bytes.isNotEmpty()) {
+            sb.append("Content-Type: text/parameters\r\n")
+            sb.append("Content-Length: ${bytes.size}\r\n")
+        }
+        sb.append("\r\n")
+        output.write(sb.toString().toByteArray(Charsets.UTF_8))
+        if (bytes.isNotEmpty()) output.write(bytes)
+        output.flush()
+        Logger.d("WFD RTSP -> $method $uri CSeq=$cSeq")
+    }
 
     private fun sendResponse(outputStream: OutputStream, response: RtspResponse) {
+        val body = response.body.toByteArray(Charsets.UTF_8)
         val sb = StringBuilder()
         sb.append("${response.protocol} ${response.statusCode} ${response.statusMessage}\r\n")
         sb.append("CSeq: $currentCSeq\r\n")
         sb.append("Server: PhairPlay/1.0\r\n")
         response.headers.forEach { (key, value) -> sb.append("$key: $value\r\n") }
-        if (response.body.isNotEmpty()) {
-            sb.append("Content-Length: ${response.body.toByteArray(Charsets.UTF_8).size}\r\n")
+        if (body.isNotEmpty()) {
+            sb.append("Content-Length: ${body.size}\r\n")
         }
         sb.append("\r\n")
-        sb.append(response.body)
         outputStream.write(sb.toString().toByteArray(Charsets.UTF_8))
+        if (body.isNotEmpty()) outputStream.write(body)
         outputStream.flush()
     }
+
+    private fun header(headers: Map<String, String>, name: String): String? =
+        headers.entries.firstOrNull { it.key.equals(name, ignoreCase = true) }?.value
 
     private fun sendServiceUnavailable(socket: Socket) {
         val response = "RTSP/1.0 503 Service Unavailable\r\nCSeq: 0\r\n\r\n"
@@ -437,7 +588,8 @@ internal class WfdRtspServer(
     }
 
     companion object {
-        private const val MAX_MESSAGE_BYTES = 65536
-        private const val WFD_SESSION_ID = "PhairPlayWfdSession"
+        private const val MAX_MESSAGE_BYTES = 65_536
+        private const val FALLBACK_SESSION_ID = "PhairPlayWfdSession"
+        private const val TEST_RTP_PORT = 19_000
     }
 }
