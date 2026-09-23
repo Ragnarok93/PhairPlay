@@ -2,6 +2,7 @@ package com.phairplay.cast
 
 import android.content.Context
 import android.content.Intent
+import android.os.Handler
 import android.os.Looper
 import android.view.Surface
 import com.google.android.gms.cast.tv.CastReceiverContext
@@ -74,8 +75,9 @@ class CastReceiver(
     }
 
     fun stop() {
-        check(Looper.myLooper() == Looper.getMainLooper()) {
-            "CastReceiver.stop() must run on the main looper"
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            Handler(Looper.getMainLooper()).post { stop() }
+            return
         }
         try {
             mediaController?.release()
