@@ -12,7 +12,6 @@ import android.os.Build
 import com.phairplay.airplay.RtspRequest
 import com.phairplay.airplay.RtspRequestReader
 import com.phairplay.airplay.RtspResponse
-import androidx.core.content.ContextCompat
 import com.phairplay.service.ProtocolState
 import com.phairplay.util.Logger
 import kotlinx.coroutines.CoroutineScope
@@ -204,15 +203,20 @@ internal class MiracastReceiver(
      * connection to the source. This uses APIs present since API 14, preserving
      * the Fire OS 6 / API 25 floor.
      */
+    @SuppressLint("NewApi")
+    @Suppress("DEPRECATION")
     private fun registerP2pConnectionReceiver() {
         if (p2pConnectionReceiverRegistered) return
         val filter = IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
-        ContextCompat.registerReceiver(
-            context,
-            p2pConnectionReceiver,
-            filter,
-            ContextCompat.RECEIVER_EXPORTED
-        )
+        if (sdkInt >= 33) {
+            context.registerReceiver(
+                p2pConnectionReceiver,
+                filter,
+                Context.RECEIVER_EXPORTED
+            )
+        } else {
+            context.registerReceiver(p2pConnectionReceiver, filter)
+        }
         p2pConnectionReceiverRegistered = true
 
         // Cover an already-formed group when the receiver is restarted while
