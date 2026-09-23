@@ -55,6 +55,7 @@ import java.net.Socket
 class MiracastReceiver(
     private val context: Context,
     private val onStateChanged: (ProtocolState) -> Unit,
+    private val onMediaSample: (MpegTsDemuxer.ElementarySample) -> Unit = {},
     private val sdkInt: Int = Build.VERSION.SDK_INT
 ) {
 
@@ -81,7 +82,8 @@ class MiracastReceiver(
         onSessionStopped = {
             Logger.i("Miracast WFD session stopped")
             if (isAdvertising) onStateChanged(ProtocolState.ADVERTISING)
-        }
+        },
+        onMediaSample = onMediaSample
     )
 
     /**
